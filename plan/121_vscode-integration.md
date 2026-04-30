@@ -136,8 +136,8 @@ Document selector: `markdown` and `*.markdown` files.
 Activation event: `onLanguage:markdown`. The
 extension does not bundle the binary; it surfaces a
 clear error and a "Download mdsmith" link when the
-binary is missing (the link points to the
-[GitHub releases page](https://github.com/jeduden/mdsmith/releases)).
+binary is missing. The link points to the
+[GitHub releases page](https://github.com/jeduden/mdsmith/releases).
 
 ### Configuration discovery
 
