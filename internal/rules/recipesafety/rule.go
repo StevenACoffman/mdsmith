@@ -42,12 +42,13 @@ var shellOperators = []string{
 	"&&", "||", ";", "|", ">>", "2>", ">", "<", "`", "$(", "${",
 }
 
-// placeholderRe matches a {name} placeholder substring.
-var placeholderRe = regexp.MustCompile(`\{([^{}]+)\}`)
+// placeholderRe matches a {name} placeholder where name is an identifier
+// ([A-Za-z_][A-Za-z0-9_]*), consistent with config validation.
+var placeholderRe = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
-// fusedRe matches two or more adjacent placeholders in one token,
-// e.g. {a}{b} or {a}{b}{c}.
-var fusedRe = regexp.MustCompile(`\{[^{}]+\}\{[^{}]+\}`)
+// fusedRe matches two or more adjacent identifier-style placeholders in one
+// token, e.g. {a}{b} or {a}{b}{c}.
+var fusedRe = regexp.MustCompile(`\{[A-Za-z_][A-Za-z0-9_]*\}\{[A-Za-z_][A-Za-z0-9_]*\}`)
 
 // recipe holds the parsed fields needed for validation.
 type recipe struct {

@@ -34,8 +34,10 @@ type ParamCfg struct {
 // regular parameter.
 var reservedParams = map[string]bool{"alt": true}
 
-// placeholderRe matches a {name} placeholder substring within a command token.
-var placeholderRe = regexp.MustCompile(`\{([^{}]+)\}`)
+// placeholderRe matches a {name} placeholder where name is an identifier
+// ([A-Za-z_][A-Za-z0-9_]*). Tokens like {a b} are intentionally not matched
+// because commands are whitespace-tokenised and such a token would be split.
+var placeholderRe = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 // ValidateBuildConfig returns an error if any recipe command references
 // an unknown param or uses a reserved param name.
