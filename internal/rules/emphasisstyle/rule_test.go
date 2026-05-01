@@ -396,20 +396,49 @@ func TestEmphInfo_NoChildren(t *testing.T) {
 	assert.Equal(t, -1, pos)
 }
 
-// TestEmphInfo_DefaultBranchSuccess covers lines 294-296: the default branch
-// of emphInfo succeeds when firstTextStart(child) − totalLevels points to a
-// valid delimiter run.  *[*text*](url)* is a concrete case: the outer italic
-// wraps a Link whose subtree's first Text lands exactly one byte after a '*'.
-func TestEmphInfo_DefaultBranchSuccess(t *testing.T) {
+// TestEmphInfo_LinkFirstChildUndetectable confirms that emphasis whose first
+// child is a non-Text/non-Emphasis node (here, a Link) is treated as
+// undetectable. Descending into the Link subtree could find an unrelated
+// nested-emphasis delimiter (see TestRegression_LinkInnerEmphasisDifferentDelim).
+func TestEmphInfo_LinkFirstChildUndetectable(t *testing.T) {
 	r := newRule("", "underscore", false)
 	f := parseFile(t, "# Heading\n\n*[*text*](url)*\n")
-	// emphInfo for the outer italic hits the default branch and finds '*' →
-	// a diagnostic is emitted for both the outer and the inner italic.
+	// Outer italic has Link as first child → undetectable, no diagnostic.
+	// Inner italic (inside the link label) is detectable and gets one diagnostic.
 	diags := r.Check(f)
-	require.NotEmpty(t, diags)
-	// The inner *text* is fully fixable; the outer is not (closeStart = -1).
+	require.Len(t, diags, 1)
+	assert.Equal(t, "italic uses asterisk; configured style is underscore", diags[0].Message)
+	// Fix: inner italic delimiters get rewritten; outer is left alone.
 	got := string(r.Fix(f))
 	assert.Equal(t, "# Heading\n\n*[_text_](url)*\n", got)
+}
+
+// TestRegression_LinkInnerEmphasisDifferentDelim guards against the bug where
+// emphInfo's default branch descended into a Link's subtree and reported the
+// inner emphasis delimiter as the outer's. With outer '*' and inner '_', the
+// outer must be reported as undetectable (not as '_').
+func TestRegression_LinkInnerEmphasisDifferentDelim(t *testing.T) {
+	r := newRule("asterisk", "asterisk", false)
+	f := parseFile(t, "# Heading\n\n*[_text_](url)*\n")
+	diags := r.Check(f)
+	// Only the inner '_text_' should produce a diagnostic; the outer '*…*'
+	// must be silently skipped because its first child is a Link.
+	require.Len(t, diags, 1)
+	assert.Equal(t, "italic uses underscore; configured style is asterisk", diags[0].Message)
+}
+
+// TestCheck_OuterEmphasisWithLinkAfterText covers the unambiguous case where
+// the outer italic starts with a Text first child (so emphInfo can locate the
+// open delimiter without descending into nested markup) and contains a Link
+// later. The diagnostic is emitted; Fix is suppressed because emphCloseStart
+// returns -1 for the Link last child.
+func TestCheck_OuterEmphasisWithLinkAfterText(t *testing.T) {
+	r := newRule("", "underscore", false)
+	f := parseFile(t, "# Heading\n\n*prefix [link](url)*\n")
+	diags := r.Check(f)
+	require.Len(t, diags, 1)
+	assert.Equal(t, "italic uses asterisk; configured style is underscore", diags[0].Message)
+	assert.Equal(t, string(f.Source), string(r.Fix(f)))
 }
 
 // TestEmphReplacements_ClosingNotDelim covers lines 204-206: emphReplacements

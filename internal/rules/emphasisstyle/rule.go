@@ -259,13 +259,14 @@ func (r *Rule) DefaultSettings() map[string]any {
 }
 
 // emphInfo returns the delimiter byte and open-start index for em.
-// It walks down the leftmost emphasis-or-text chain.
-// Returns (0, -1) if the delimiter cannot be determined.
-//
-// After computing the candidate position, it validates that
-// source[pos:pos+em.Level] is a run of the same '*' or '_' byte.
-// This guards against non-text first children (e.g. links) where the
-// offset arithmetic lands inside markup rather than on the delimiter.
+// It walks down the leftmost-emphasis chain to a Text leaf and reads the byte
+// before that segment. Returns (0, -1) when:
+//   - The first non-Emphasis descendant is not a Text node (e.g. a Link or
+//     Image). Descending into such children is unsafe because nested emphasis
+//     inside their subtree can fool the offset arithmetic and produce a
+//     position that lands on an unrelated delimiter.
+//   - The computed position is out of bounds or does not contain a homogeneous
+//     run of '*' or '_' of length em.Level.
 func emphInfo(em *ast.Emphasis, source []byte) (delim byte, openStart int) {
 	totalLevels := em.Level
 	child := em.FirstChild()
@@ -284,17 +285,9 @@ func emphInfo(em *ast.Emphasis, source []byte) (delim byte, openStart int) {
 			totalLevels += v.Level
 			child = v.FirstChild()
 		default:
-			start := firstTextStart(child)
-			if start < 0 {
-				return 0, -1
-			}
-			pos := start - totalLevels
-			if pos >= 0 && pos < len(source) {
-				c := source[pos]
-				if (c == '*' || c == '_') && isDelimRun(source, pos, em.Level, c) {
-					return c, pos
-				}
-			}
+			// Links, images, and other inline nodes can contain nested emphasis
+			// whose delimiters would mis-align the offset arithmetic. Treat as
+			// undetectable rather than guessing.
 			return 0, -1
 		}
 	}
@@ -329,22 +322,6 @@ func emphCloseStart(em *ast.Emphasis) int {
 	default:
 		return -1
 	}
-}
-
-// firstTextStart returns the Segment.Start of the first *ast.Text in n's
-// subtree, or -1 if none is found.
-func firstTextStart(n ast.Node) int {
-	result := -1
-	_ = ast.Walk(n, func(child ast.Node, entering bool) (ast.WalkStatus, error) {
-		if entering {
-			if t, ok := child.(*ast.Text); ok {
-				result = t.Segment.Start
-				return ast.WalkStop, nil
-			}
-		}
-		return ast.WalkContinue, nil
-	})
-	return result
 }
 
 // isTripleRun reports whether em directly wraps a single inner Emphasis and
