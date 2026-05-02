@@ -65,7 +65,7 @@ LSP capabilities the server advertises:
 | `textDocumentSync = Full`         | Re-lint on every change; debounced               |
 | `publishDiagnostics`              | One push after each lint                         |
 | `codeActionProvider`              | Per-diagnostic quick fixes (see below)           |
-| `workspace.configuration`         | Pull `mdsmith.path`, `mdsmith.config`            |
+| `workspace.configuration`         | Pull `mdsmith.config` and trace level            |
 | `workspace.didChangeWatchedFiles` | Re-lint open buffers when `.mdsmith.yml` changes |
 
 The server maps mdsmith JSON diagnostics to LSP
@@ -127,10 +127,11 @@ Settings the extension contributes:
 | `mdsmith.fixOnSave`    | `false`     | Wires `source.fixAll.mdsmith` on save |
 | `mdsmith.trace.server` | `"off"`     | LSP trace verbosity                   |
 
-The default is `onSave`. Re-linting on every
-keystroke is opt-in: a user editing a long runbook
-during an incident must not pay debounce latency
-they did not ask for.
+`mdsmith.path` is client-only. The extension reads
+it to spawn the server. The server pulls only
+`mdsmith.config`, `mdsmith.run`, and
+`mdsmith.trace.server`. The `mdsmith.run` default
+is `onSave`. Live linting per keystroke is opt-in.
 
 Document selector: `markdown` and `*.markdown` files.
 Activation event: `onLanguage:markdown`. The
