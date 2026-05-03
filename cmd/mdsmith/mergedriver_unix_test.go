@@ -52,3 +52,17 @@ func TestFixAtRealPath_PathnameIsSymlink_ExitsTwo(t *testing.T) {
 	_, code := fixAtRealPath([]byte("# content\n"), ours, link, 1<<20)
 	assert.Equal(t, 2, code)
 }
+
+func TestFixAtRealPath_OursIsSymlink_ExitsTwo(t *testing.T) {
+	dir := t.TempDir()
+	pathname := filepath.Join(dir, "pathname.md")
+	require.NoError(t, os.WriteFile(pathname, []byte("# content\n"), 0o644))
+
+	oursTarget := filepath.Join(dir, "ours-target.md")
+	oursLink := filepath.Join(dir, "ours.md")
+	require.NoError(t, os.WriteFile(oursTarget, []byte("# content\n"), 0o644))
+	require.NoError(t, os.Symlink(oursTarget, oursLink))
+
+	_, code := fixAtRealPath([]byte("# content\n"), oursLink, pathname, 1<<20)
+	assert.Equal(t, 2, code)
+}
