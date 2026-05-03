@@ -1227,11 +1227,13 @@ func TestFixAtRealPath_GuardBeforeRemoveFails_ExitsTwo(t *testing.T) {
 
 	orig := guardFn
 	t.Cleanup(func() { guardFn = orig })
-	// Calls: 1=pathname top, 2=ours top, 3=pathname pre-write,
-	//        6=pathname pre-remove (4 & 5 are from fixAtRealPath ours re-check
-	//        and the re-check inside readAndRestore before restore — but since
-	//        backupErr is ENOENT the restore guard (call 4) isn't taken and we
-	//        go straight to the Remove guard).
+	// guardFn call sequence for the ENOENT-backup path:
+	//   1 = pathname at top of fixAtRealPath
+	//   2 = ours at top of fixAtRealPath
+	//   3 = pathname re-check before write
+	//   4 = pathname re-check before os.Remove in readAndRestore
+	// (the restore guard inside readAndRestore is skipped because backupErr
+	// is ENOENT, so the ENOENT branch runs instead)
 	guardFn = guardCallN(4, "injected pre-remove guard")
 
 	got := captureStderr(func() {
