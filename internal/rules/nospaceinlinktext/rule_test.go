@@ -524,11 +524,32 @@ func TestWhitespaceOnlyImageAltNotFlagged(t *testing.T) {
 	assert.Empty(t, diags)
 }
 
-func TestWhitespaceOnlyLinkTextNotFixed(t *testing.T) {
-	// [ ](url) — link text is only whitespace; Fix must not trim to empty.
-	src := "# T\n\n[ ](url)\n"
+func TestWhitespaceOnlyImageAltNotFixed(t *testing.T) {
+	// Fix must not trim ![ ](img.png) to ![](img.png) when a clean link is also
+	// present — both Check (skip image-only-whitespace) and fixSpans
+	// (img && empty trimmed → leave as-is) must be exercised.
+	src := "# T\n\n[ text ](url)\n\n![ ](img.png)\n"
 	result := fix(t, src, true)
-	assert.Equal(t, src, result)
+	assert.Equal(t, "# T\n\n[text](url)\n\n![ ](img.png)\n", result)
+}
+
+func TestWhitespaceOnlyLinkTextIsFlagged(t *testing.T) {
+	// [ ](url) — link text is only whitespace. Unlike images there is no
+	// separate empty-label rule for links, so MDS049 must still flag this.
+	diags := check(t, "# T\n\n[ ](url)\n", true)
+	msgs := make([]string, len(diags))
+	for i, d := range diags {
+		msgs[i] = d.Message
+	}
+	assert.Contains(t, msgs, "link text has leading whitespace")
+	assert.Contains(t, msgs, "link text has trailing whitespace")
+}
+
+func TestWhitespaceOnlyLinkTextIsFixed(t *testing.T) {
+	// [ ](url) — Fix trims the whitespace-only link label to empty.
+	// No separate empty-link-text rule exists, so trimming is the right action.
+	result := fix(t, "# T\n\n[ ](url)\n", true)
+	assert.Equal(t, "# T\n\n[](url)\n", result)
 }
 
 func TestReferenceImageLeadingSpace(t *testing.T) {

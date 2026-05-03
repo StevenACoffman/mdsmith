@@ -275,8 +275,8 @@ func (r *Rule) Check(f *lint.File) []lint.Diagnostic {
 	var diags []lint.Diagnostic
 	for _, s := range r.collectSpans(f) {
 		inner := f.Source[s.open+1 : s.close]
-		if len(trimSpaceTab(inner)) == 0 {
-			continue // whitespace-only content; leave to accessibility rules
+		if s.img && len(trimSpaceTab(inner)) == 0 {
+			continue // whitespace-only image alt; leave to MDS032 (no-empty-alt-text)
 		}
 		role := "link text"
 		if s.img {
@@ -332,8 +332,8 @@ func fixSpans(source []byte, spans []span, from, to int) []byte {
 		result = append(result, source[prev:s.open+1]...) // up to and including [
 		inner := fixSpans(source, spans[i+1:], s.open+1, s.close)
 		trimmed := trimSpaceTab(inner)
-		if len(trimmed) == 0 {
-			result = append(result, inner...) // would empty the brackets; leave as-is
+		if s.img && len(trimmed) == 0 {
+			result = append(result, inner...) // whitespace-only image alt; leave to MDS032
 		} else {
 			result = append(result, trimmed...)
 		}
