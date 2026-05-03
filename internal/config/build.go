@@ -127,7 +127,7 @@ func validateCommandPlaceholders(recipeName, command string, allowed map[string]
 // the path to the loaded .mdsmith.yml; it is set in the config-path
 // setting so MDS040 can report diagnostics against the right file.
 func InjectBuildConfig(cfg *Config, cfgPath string) {
-	if cfg == nil || len(cfg.Build.Recipes) == 0 {
+	if cfg == nil {
 		return
 	}
 	recipes := serializeRecipes(cfg.Build.Recipes)
