@@ -19,6 +19,10 @@ import (
 	"github.com/jeduden/mdsmith/internal/rule"
 )
 
+// writeFile is a variable so tests can substitute a failing implementation
+// to exercise the os.WriteFile error path in WriteGitattributes.
+var writeFile = os.WriteFile
+
 // PreMergeCommitMarker is the comment line written into the
 // pre-merge-commit hook so that mdsmith (and the git-hook-sync rule)
 // can recognise hooks it manages without stomping on user-authored
@@ -761,14 +765,20 @@ func WriteGitattributes(path string, globs Globs) error {
 	// Preserve the existing file's permissions; fall back to 0o644 for new files.
 	// os.WriteFile only applies perm on creation; os.Chmod enforces it on
 	// existing files too (truncation does not change the file's mode).
+	// Chmod is skipped for new files to respect the caller's umask.
 	mode := os.FileMode(0o644)
+	existed := false
 	if info, err := os.Stat(path); err == nil {
-		mode = info.Mode().Perm()
+		mode = info.Mode() &^ os.ModeType
+		existed = true
 	}
-	if err := os.WriteFile(path, []byte(newContent.String()), mode); err != nil {
+	if err := writeFile(path, []byte(newContent.String()), mode); err != nil {
 		return err
 	}
-	return os.Chmod(path, mode)
+	if existed {
+		return os.Chmod(path, mode)
+	}
+	return nil
 }
 
 // StageGitattributes runs `git add -- .gitattributes` against repoRoot

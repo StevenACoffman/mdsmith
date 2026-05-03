@@ -74,11 +74,11 @@ func runMergeDriver(args []string) int {
 
 // mergeFileMode returns the permission bits of the named file, or
 // defaultMode if the file cannot be stat'd (e.g. does not exist yet).
-// It returns only Perm() (the low 9 bits) to avoid passing file-type
-// bits to os.WriteFile / os.Chmod.
+// It strips file-type bits (ModeDir, ModeSymlink, …) but preserves
+// special permission bits (setuid/setgid/sticky) if present.
 func mergeFileMode(name string, defaultMode os.FileMode) os.FileMode {
 	if info, err := os.Stat(name); err == nil {
-		return info.Mode().Perm()
+		return info.Mode() &^ os.ModeType
 	}
 	return defaultMode
 }
@@ -122,8 +122,9 @@ func mergeAndClean(base, ours, theirs string, maxBytes int64) ([]byte, int) {
 		fmt.Fprintf(os.Stderr, "mdsmith: writing cleaned merge: %v\n", err)
 		return nil, 2
 	}
-	if err := os.Chmod(ours, oursMode); err != nil {
+	if err := chmodFunc(ours, oursMode); err != nil {
 		fmt.Fprintf(os.Stderr, "mdsmith: chmod merge result: %v\n", err)
+		return nil, 2
 	}
 	return cleaned, 0
 }
@@ -236,8 +237,9 @@ func fixAtRealPath(cleaned []byte, ours, pathname string, maxBytes int64) ([]byt
 		fmt.Fprintf(os.Stderr, "mdsmith: writing merge output: %v\n", err)
 		return nil, 2
 	}
-	if err := os.Chmod(ours, oursMode); err != nil {
+	if err := chmodFunc(ours, oursMode); err != nil {
 		fmt.Fprintf(os.Stderr, "mdsmith: chmod merge output: %v\n", err)
+		return nil, 2
 	}
 
 	return fixed, 0

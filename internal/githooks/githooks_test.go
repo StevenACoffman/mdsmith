@@ -1,6 +1,7 @@
 package githooks
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1101,6 +1102,20 @@ func TestExtractGlobs_SkipsSingleFieldLines(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, []string{"*.md"}, got.Include)
 	assert.Empty(t, got.Exclude)
+}
+
+func TestWriteGitattributes_WriteFileFails_ReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".gitattributes")
+
+	orig := writeFile
+	t.Cleanup(func() { writeFile = orig })
+	writeFile = func(string, []byte, os.FileMode) error {
+		return fmt.Errorf("mock write failure")
+	}
+
+	err := WriteGitattributes(path, Globs{Include: []string{"a.md"}})
+	assert.Error(t, err)
 }
 
 func TestWriteGitattributes_PropagatesNonENOENTReadError(t *testing.T) {

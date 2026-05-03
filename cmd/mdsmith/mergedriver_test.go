@@ -913,7 +913,7 @@ func TestMergeFileMode_ExistingFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("x"), 0o755))
 
 	got := mergeFileMode(path, 0o644)
-	assert.Equal(t, os.FileMode(0o755), got.Perm())
+	assert.Equal(t, os.FileMode(0o755), got)
 }
 
 func TestMergeFileMode_MissingFile_UsesDefault(t *testing.T) {
@@ -1005,6 +1005,59 @@ func TestFixAtRealPath_WriteToOursFails_ExitsTwo(t *testing.T) {
 		assert.Equal(t, 2, code)
 	})
 	assert.Contains(t, got, "writing merge output")
+}
+
+func TestMergeAndClean_ChmodFails_ExitsTwo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+
+	content := "# Hello\n"
+	base := filepath.Join(dir, "base.md")
+	ours := filepath.Join(dir, "ours.md")
+	theirs := filepath.Join(dir, "theirs.md")
+	require.NoError(t, os.WriteFile(base, []byte(content), 0o644))
+	require.NoError(t, os.WriteFile(ours, []byte(content), 0o644))
+	require.NoError(t, os.WriteFile(theirs, []byte(content), 0o644))
+
+	orig := chmodFunc
+	t.Cleanup(func() { chmodFunc = orig })
+	chmodFunc = func(string, os.FileMode) error {
+		return fmt.Errorf("mock chmod failure")
+	}
+
+	got := captureStderr(func() {
+		_, code := mergeAndClean(base, ours, theirs, 1<<20)
+		assert.Equal(t, 2, code)
+	})
+	assert.Contains(t, got, "chmod merge result")
+}
+
+func TestFixAtRealPath_ChmodFails_ExitsTwo(t *testing.T) {
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+
+	content := []byte("# Hello\n\nWorld.\n")
+	pathname := filepath.Join(dir, "PLAN.md")
+	ours := filepath.Join(dir, "ours.md")
+	require.NoError(t, os.WriteFile(pathname, content, 0o644))
+	require.NoError(t, os.WriteFile(ours, content, 0o644))
+
+	orig := chmodFunc
+	t.Cleanup(func() { chmodFunc = orig })
+	chmodFunc = func(string, os.FileMode) error {
+		return fmt.Errorf("mock chmod failure")
+	}
+
+	got := captureStderr(func() {
+		_, code := fixAtRealPath(content, ours, pathname, 1<<20)
+		assert.Equal(t, 2, code)
+	})
+	assert.Contains(t, got, "chmod merge output")
 }
 
 func TestFixAtRealPath_PreservesOursFileMode(t *testing.T) {
