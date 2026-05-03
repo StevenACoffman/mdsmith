@@ -707,8 +707,9 @@ func GlobsEqual(a, b Globs) bool {
 // text, eol=lf, linguist settings, other merge drivers) are never
 // dropped.
 func WriteGitattributes(path string, globs Globs) error {
-	// Reject symlinks and non-regular files before any I/O so neither the
-	// read nor the write follows a link to a path outside the repository.
+	// Reject symlinks and non-regular files before any I/O to reduce the
+	// risk of following a link to a path outside the repository.
+	// A narrow TOCTOU window remains between this check and the I/O calls.
 	if info, err := os.Lstat(path); err == nil {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("writing %s: not a regular file", path)
@@ -789,7 +790,7 @@ func writeGitattributesFile(path, content string) error {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("writing %s: not a regular file", path)
 		}
-		mode = info.Mode() &^ os.ModeType
+		mode = info.Mode().Perm()
 	}
 	if err := writeFile(path, []byte(content), mode); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
