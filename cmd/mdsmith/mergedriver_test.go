@@ -857,23 +857,23 @@ func TestMergeAndClean_DashPrefixedFilenames_NoOptionInjection(t *testing.T) {
 	// Regression test: file paths starting with "-" must not be
 	// interpreted as git options. The "--" separator added to the
 	// git merge-file call prevents option injection.
+	// Use relative paths so the argv elements passed to git actually
+	// start with "-" (absolute paths like /tmp/dir/-base.md do not).
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
 	dir := t.TempDir()
-
-	// Use a filename that starts with "-" to trigger option injection
-	// if "--" is missing from the git merge-file invocation.
-	base := filepath.Join(dir, "-base.md")
-	ours := filepath.Join(dir, "-ours.md")
-	theirs := filepath.Join(dir, "-theirs.md")
+	origWd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
 
 	content := "# Hello\n"
-	require.NoError(t, os.WriteFile(base, []byte(content), 0o644))
-	require.NoError(t, os.WriteFile(ours, []byte(content), 0o644))
-	require.NoError(t, os.WriteFile(theirs, []byte(content), 0o644))
+	require.NoError(t, os.WriteFile("-base.md", []byte(content), 0o644))
+	require.NoError(t, os.WriteFile("-ours.md", []byte(content), 0o644))
+	require.NoError(t, os.WriteFile("-theirs.md", []byte(content), 0o644))
 
-	_, code := mergeAndClean(base, ours, theirs, 1<<20)
+	_, code := mergeAndClean("-base.md", "-ours.md", "-theirs.md", 1<<20)
 	assert.Equal(t, 0, code, "merge with dash-prefixed filenames must succeed")
 }
 
@@ -978,10 +978,6 @@ func TestFixAtRealPath_WriteToPathnameFails_ExitsTwo(t *testing.T) {
 }
 
 func TestFixAtRealPath_WriteToOursFails_ExitsTwo(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
 	dir := t.TempDir()
 	origWd, err := os.Getwd()
 	require.NoError(t, err)
@@ -1011,9 +1007,6 @@ func TestFixAtRealPath_WriteToOursFails_ExitsTwo(t *testing.T) {
 }
 
 func TestFixAtRealPath_PreservesOursFileMode(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
 	if runtime.GOOS == "windows" {
 		t.Skip("file mode bits not meaningful on Windows")
 	}
