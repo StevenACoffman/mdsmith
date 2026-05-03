@@ -6,7 +6,7 @@ summary: >-
   Add the `<?build?>` directive and MDS039, which
   validates directive params against the recipe's
   declared schema and keeps the body in sync with
-  the rendered `body_template` on `mdsmith fix`.
+  the rendered `body-template` on `mdsmith fix`.
   No external tool runs at lint time.
 model: sonnet
 ---
@@ -16,9 +16,9 @@ model: sonnet
 
 Let authors declare a build artifact with a
 `<?build?>` directive. `mdsmith fix` renders the
-body from the recipe's `body_template`. MDS039
-validates params and reports a stale-section
-diagnostic when the rendered body diverges from
+body from the recipe's `body-template`. MDS039
+validates params and reports `generated section is out of date`
+when the rendered body diverges from
 the actual body — without running any external tool.
 
 ## Context
@@ -62,7 +62,7 @@ no extension filter.
 
 ### Generated body
 
-Each recipe has a `body_template` rendered by
+Each recipe has a `body-template` rendered by
 `mdsmith fix`:
 
 | Placeholder | Value                                   |
@@ -74,7 +74,7 @@ When `body-template` is omitted from the recipe
 declaration, the default `[{output}]({output})`
 is used.
 
-User-declared recipes may set `body_template`
+User-declared recipes may set `body-template`
 in `build.recipes.NAME.body-template` (plan 100).
 
 ### Rule: MDS039 (build)
@@ -97,9 +97,9 @@ Validation:
 4. **No unknown params** — params not in the recipe's
    `required` or `optional` lists produce a warning.
 5. **Body in sync** — the section body must equal the
-   rendered `body_template`. MDS039 reports
-   `stale-section` when it diverges; `Fix` rewrites
-   the body using `gensection.Engine`.
+   rendered `body-template`. MDS039 reports
+   `generated section is out of date` when it diverges;
+   `Fix` rewrites the body using `gensection.Engine`.
 
 A Markdown file can only reference recipes declared
 in `.mdsmith.yml`. It cannot introduce a new recipe.

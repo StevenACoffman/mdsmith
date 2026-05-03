@@ -17,17 +17,17 @@ MDS039 validates each `<?build?>` directive in a Markdown file:
 
 1. **`recipe` resolves** — the recipe name must be declared in
    `build.recipes` in `.mdsmith.yml`.
-2. **`output` is present and safe** — `output` is required and
-   must not contain `..` path components.
+2. **`output` is present and safe** — `output` is required, must be a
+   relative path, and must not contain `..` path components.
 3. **Required params present** — params listed as required by the
    recipe schema must all be supplied.
 4. **No unknown params** (warning) — params not in the recipe's
    `required` or `optional` lists produce a warning.
 5. **Body in sync** — the section body must equal the rendered
-   `body_template`; MDS039 reports `generated section is out of date`
+   `body-template`; MDS039 reports `generated section is out of date`
    when it diverges.
 
-`mdsmith fix` rewrites the body using the rendered `body_template`.
+`mdsmith fix` rewrites the body using the rendered `body-template`.
 No external tool is executed.
 
 ## Directive syntax
@@ -54,7 +54,7 @@ filter.
 
 ## Generated body
 
-Each recipe has a `body_template` rendered by `mdsmith fix`. Two
+Each recipe has a `body-template` rendered by `mdsmith fix`. Two
 placeholders are available:
 
 | Placeholder | Value                                   |

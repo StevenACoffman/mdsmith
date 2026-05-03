@@ -28,10 +28,10 @@ The directive uses the same block form as `<?catalog?>` and
 
 ### Common parameters
 
-| Name     | Required | Description                                                     |
-|----------|----------|-----------------------------------------------------------------|
-| `recipe` | yes      | Recipe name declared in `build.recipes`                         |
-| `output` | yes      | Artifact path relative to the Markdown file; no `..` components |
+| Name     | Required | Description                                                   |
+|----------|----------|---------------------------------------------------------------|
+| `recipe` | yes      | Recipe name declared in `build.recipes`                       |
+| `output` | yes      | Relative artifact path; no `..` components; no absolute paths |
 
 `output` accepts any file extension; the rule applies no extension
 filter.
@@ -73,7 +73,7 @@ output: docs/diagram.png
 ## Generated body
 
 `mdsmith fix` renders the section body from the recipe's
-`body_template`. Two placeholders are available:
+`body-template`. Two placeholders are available:
 
 | Placeholder | Value                                   |
 |-------------|-----------------------------------------|
@@ -88,12 +88,12 @@ default `[{output}]({output})` is used.
 MDS039 validates `<?build?>` directives and reports:
 
 - **Error** when `recipe` is missing or not declared in `build.recipes`
-- **Error** when `output` is missing or contains `..` components
+- **Error** when `output` is missing, is an absolute path, or contains `..` components
 - **Error** when a required param for the recipe is absent
 - **Warning** when a param is not in the recipe's `required` or
   `optional` lists
 - **Error** (`generated section is out of date`) when the body
-  diverges from the rendered `body_template`
+  diverges from the rendered `body-template`
 
 Run `mdsmith fix <file>` to regenerate stale bodies.
 

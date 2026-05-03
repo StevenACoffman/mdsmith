@@ -1,5 +1,5 @@
 // Package build implements MDS039, which validates <?build?> directive
-// parameters and keeps the body in sync with the recipe's body_template.
+// parameters and keeps the body in sync with the recipe's body-template.
 package build
 
 import (
@@ -24,7 +24,7 @@ type recipeSchema struct {
 	BodyTemplate string
 }
 
-// defaultBodyTemplate is the fallback body_template for recipes that omit body-template.
+// defaultBodyTemplate is the fallback body-template for recipes that omit body-template.
 const defaultBodyTemplate = "[{output}]({output})"
 
 // Rule implements MDS039 (build).
