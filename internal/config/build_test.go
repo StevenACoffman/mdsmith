@@ -173,6 +173,27 @@ func TestInjectBuildConfig_Nil(t *testing.T) {
 	InjectBuildConfig(nil, "")
 }
 
+func TestInjectBuildConfig_EmptyRecipes_ClearsExistingSettings(t *testing.T) {
+	// Even with no build.recipes, InjectBuildConfig must overwrite any
+	// user-supplied recipes setting so rules cannot receive recipes via
+	// rule settings alone.
+	cfg := &Config{
+		Build: BuildConfig{}, // no recipes
+		Rules: map[string]RuleCfg{
+			"build": {
+				Enabled:  true,
+				Settings: map[string]any{"recipes": map[string]any{"sneaky": map[string]any{}}},
+			},
+		},
+	}
+	InjectBuildConfig(cfg, "")
+	rc := cfg.Rules["build"]
+	require.NotNil(t, rc.Settings)
+	recipes, ok := rc.Settings["recipes"].(map[string]any)
+	require.True(t, ok)
+	assert.Empty(t, recipes, "recipes must be cleared when build.recipes is empty")
+}
+
 func TestInjectBuildConfig_NoRecipes(t *testing.T) {
 	cfg := &Config{
 		Rules: map[string]RuleCfg{
@@ -180,8 +201,12 @@ func TestInjectBuildConfig_NoRecipes(t *testing.T) {
 		},
 	}
 	InjectBuildConfig(cfg, ".mdsmith.yml")
-	// Settings must remain nil/empty — nothing to inject.
-	assert.Nil(t, cfg.Rules["recipe-safety"].Settings)
+	// An empty recipes map is still injected to overwrite any user-supplied settings.
+	rc := cfg.Rules["recipe-safety"]
+	require.NotNil(t, rc.Settings)
+	recipes, ok := rc.Settings["recipes"].(map[string]any)
+	require.True(t, ok)
+	assert.Empty(t, recipes)
 }
 
 func TestInjectBuildConfig_RuleDisabled(t *testing.T) {
@@ -274,6 +299,71 @@ func TestInjectBuildConfig_OverwritesExistingSettings(t *testing.T) {
 	// recipes must be overwritten by serialized form, not the old string value.
 	_, isMap := rc.Settings["recipes"].(map[string]any)
 	assert.True(t, isMap, "recipes should be overwritten with a map")
+}
+
+func TestInjectBuildConfig_BuildRule(t *testing.T) {
+	cfg := &Config{
+		Build: BuildConfig{
+			Recipes: map[string]RecipeCfg{
+				"render": {
+					Command:      "myrenderer {source} -o {output}",
+					BodyTemplate: "![{alt}]({output})",
+					Params: ParamCfg{
+						Required: []string{"source"},
+						Optional: []string{"output"},
+					},
+				},
+			},
+		},
+		Rules: map[string]RuleCfg{
+			"build": {Enabled: true},
+		},
+	}
+	InjectBuildConfig(cfg, ".mdsmith.yml")
+
+	rc := cfg.Rules["build"]
+	require.NotNil(t, rc.Settings)
+	recipesAny, ok := rc.Settings["recipes"]
+	require.True(t, ok, "recipes key must be present in build rule settings")
+	recipes, ok := recipesAny.(map[string]any)
+	require.True(t, ok)
+	assert.Contains(t, recipes, "render")
+	// config-path must NOT be injected into the build rule (only recipe-safety gets it)
+	_, hasPath := rc.Settings["config-path"]
+	assert.False(t, hasPath)
+}
+
+func TestInjectBuildConfig_BuildRule_NilSettings(t *testing.T) {
+	cfg := &Config{
+		Build: BuildConfig{
+			Recipes: map[string]RecipeCfg{
+				"x": {Command: "tool"},
+			},
+		},
+		Rules: map[string]RuleCfg{
+			"build": {Enabled: true, Settings: nil},
+		},
+	}
+	InjectBuildConfig(cfg, "cfg.yml")
+	rc := cfg.Rules["build"]
+	require.NotNil(t, rc.Settings)
+	_, ok := rc.Settings["recipes"]
+	assert.True(t, ok)
+}
+
+func TestInjectBuildConfig_BuildRule_Disabled(t *testing.T) {
+	cfg := &Config{
+		Build: BuildConfig{
+			Recipes: map[string]RecipeCfg{
+				"x": {Command: "tool"},
+			},
+		},
+		Rules: map[string]RuleCfg{
+			"build": {Enabled: false},
+		},
+	}
+	InjectBuildConfig(cfg, "cfg.yml")
+	assert.Nil(t, cfg.Rules["build"].Settings)
 }
 
 func TestInjectBuildConfig_EmptyCfgPath_NoPathInjected(t *testing.T) {

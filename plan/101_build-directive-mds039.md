@@ -1,12 +1,12 @@
 ---
 id: 101
 title: build directive and MDS039 lint rule
-status: "🔲"
+status: "✅"
 summary: >-
   Add the `<?build?>` directive and MDS039, which
   validates directive params against the recipe's
   declared schema and keeps the body in sync with
-  the rendered `body_template` on `mdsmith fix`.
+  the rendered `body-template` on `mdsmith fix`.
   No external tool runs at lint time.
 model: sonnet
 ---
@@ -16,9 +16,9 @@ model: sonnet
 
 Let authors declare a build artifact with a
 `<?build?>` directive. `mdsmith fix` renders the
-body from the recipe's `body_template`. MDS039
-validates params and reports a stale-section
-diagnostic when the rendered body diverges from
+body from the recipe's `body-template`. MDS039
+validates params and reports `generated section is out of date`
+when the rendered body diverges from
 the actual body — without running any external tool.
 
 ## Context
@@ -29,9 +29,8 @@ After this plan, `mdsmith check` and `mdsmith fix`
 work end-to-end for `<?build?>` blocks; artifact
 files are not yet produced.
 
-Built-in recipes (`screenshot`, `vhs`) are defined
-here with their param schemas. Their execution
-implementations live in plan 102.
+All recipes must be declared in `build.recipes` in
+`.mdsmith.yml`. There are no built-in recipes.
 
 ## Design
 
@@ -39,21 +38,11 @@ implementations live in plan 102.
 
 ```text
 <?build
-recipe: screenshot
-url: /inbox
-output: docs/inbox.png
+recipe: render
+source: diagram.svg
+output: docs/diagram.png
 ?>
-![screenshot output: docs/inbox.png](docs/inbox.png)
-<?/build?>
-```
-
-```text
-<?build
-recipe: vhs
-input: demo.tape
-output: demo.gif
-?>
-![vhs output: demo.gif](demo.gif)
+![render output: docs/diagram.png](docs/diagram.png)
 <?/build?>
 ```
 
@@ -65,53 +54,28 @@ Common parameters (all recipes):
 
 | Name     | Required | Description                                                     |
 |----------|----------|-----------------------------------------------------------------|
-| `recipe` | yes      | Built-in or user-declared recipe name                           |
+| `recipe` | yes      | Recipe name declared in `build.recipes`                         |
 | `output` | yes      | Artifact path relative to the Markdown file; no `..` components |
 
 `output` accepts any file extension; MDS039 applies
 no extension filter.
 
-### Built-in recipe param schemas
-
-#### `screenshot`
-
-| Param      | Required | Default    |
-|------------|----------|------------|
-| `url`      | yes      | —          |
-| `selector` | no       | full page  |
-| `viewport` | no       | `1280x800` |
-| `wait`     | no       | `0` ms     |
-| `click`    | no       | —          |
-| `hide`     | no       | `[]`       |
-
-#### `vhs`
-
-| Param   | Required |
-|---------|----------|
-| `input` | yes      |
-
-Built-in recipe params are hard-coded in MDS039.
-User-declared recipes read their schemas from
-`build.recipes` in `.mdsmith.yml` (plan 100).
-
 ### Generated body
 
-Each recipe has a `body_template` rendered by
-`mdsmith fix`. Built-in defaults:
+Each recipe has a `body-template` rendered by
+`mdsmith fix`:
 
-| Recipe       | Default `body_template` |
-|--------------|-------------------------|
-| `screenshot` | `![{alt}]({output})`    |
-| `vhs`        | `![{alt}]({output})`    |
-| custom       | `[{output}]({output})`  |
+| Placeholder | Value                                   |
+|-------------|-----------------------------------------|
+| `{output}`  | The `output` param value                |
+| `{alt}`     | `"{recipe} output: {output}"` (default) |
 
-`{alt}` defaults to `"{recipe} output: {output}"`.
-`{output}` is the directive's `output` param value.
-The rendered body always satisfies MDS032
-(non-empty alt text for images).
+When `body-template` is omitted from the recipe
+declaration, the default `[{output}]({output})`
+is used.
 
-User-declared recipes may override `body_template`
-in `build.recipes.NAME.body_template` (plan 100).
+User-declared recipes may set `body-template`
+in `build.recipes.NAME.body-template` (plan 100).
 
 ### Rule: MDS039 (build)
 
@@ -123,87 +87,78 @@ in `build.recipes.NAME.body_template` (plan 100).
 
 Validation:
 
-1. **`recipe` resolves** — the recipe name must be a
-   built-in (`screenshot`, `vhs`) or declared in
-   `build.recipes`.
+1. **`recipe` resolves** — the recipe name must be
+   declared in `build.recipes`.
 2. **`output` is safe** — relative path, no `..`
    components, inside the project root.
-3. **Required params present** — built-in required
-   params (e.g. `url` for `screenshot`) and
-   user-declared `params.required` entries must all
-   be supplied by the directive.
+3. **Required params present** — `params.required`
+   entries from the recipe schema must all be
+   supplied by the directive.
 4. **No unknown params** — params not in the recipe's
    `required` or `optional` lists produce a warning.
 5. **Body in sync** — the section body must equal the
-   rendered `body_template`. MDS039 reports
-   `stale-section` when it diverges; `Fix` rewrites
-   the body using `gensection.Engine`.
+   rendered `body-template`. MDS039 reports
+   `generated section is out of date` when it diverges;
+   `Fix` rewrites the body using `gensection.Engine`.
 
-A Markdown file can reference only recipes declared
-in `.mdsmith.yml` or built-in recipes. It cannot
-introduce a new recipe.
+A Markdown file can only reference recipes declared
+in `.mdsmith.yml`. It cannot introduce a new recipe.
 
 ### Interaction with existing rules
 
-- **MDS032**: `{alt}` in the default `body_template`
-  ensures alt text is always non-empty.
 - **MDS027**: a missing artifact file fires MDS027
   independently; MDS039 does not duplicate it.
+- **MDS040**: validates `build.recipes` command
+  safety; MDS039 validates `<?build?>` usage in
+  Markdown files.
 - **merge-driver**: regenerates the `<?build?>` body
   on conflict; artifact bytes are not regenerated.
 
 ## Tasks
 
-1. Implement the `<?build?>` directive in
+1. [x] Implement the `<?build?>` directive in
    `internal/rules/build/` using `gensection.Engine`.
    Register as MDS039, category `meta`. `Generate`
-   renders `body_template` only; it never calls a
+   renders `body-template` only; it never calls a
    builder or touches the filesystem.
-2. Add built-in recipe schemas for `screenshot` and
-   `vhs` (param names, required/optional lists,
-   default `body_template`).
-3. Implement MDS039 validation (recipe resolution,
+2. [x] Implement MDS039 validation (recipe resolution,
    `output` path safety, required params, unknown
-   params, stale-section body check).
-4. Add `good/`, `bad/`, and `fixed/` fixtures for
+   params, stale-body check).
+3. [x] Add `good/`, `bad/`, and `fixed/` fixtures for
    MDS039 under `internal/rules/MDS039-build/`.
-5. Wire MDS039 into `cmd/mdsmith/main.go`.
-6. Document MDS039 in
+4. [x] Wire MDS039 into `cmd/mdsmith/main.go`.
+5. [x] Document MDS039 in
    `internal/rules/MDS039-build/README.md`.
-7. Add user guide at
+6. [x] Add user guide at
    `docs/guides/directives/build.md` covering the
-   directive syntax, built-in recipes, and how
-   `mdsmith fix` keeps the body in sync.
+   directive syntax and how `mdsmith fix` keeps
+   the body in sync.
 
 ## Acceptance Criteria
 
-- [ ] `<?build recipe:screenshot url:... output:...?>`
-      body is regenerated on `mdsmith fix`
-- [ ] `<?build recipe:vhs input:demo.tape output:demo.gif?>`
-      body is regenerated on `mdsmith fix`
-- [ ] MDS039 reports `stale-section` when the body
-      diverges from the rendered `body_template`
-- [ ] `mdsmith check` does **not** run any external
+- [x] `<?build?>` body is regenerated on `mdsmith fix`
+      using the recipe's `body-template`
+- [x] MDS039 reports `generated section is out of date`
+      when the body diverges from the rendered `body-template`
+- [x] `mdsmith check` does **not** run any external
       tool for `<?build?>` blocks
-- [ ] MDS039 rejects an unknown recipe name
-- [ ] MDS039 rejects a missing `output` param
-- [ ] MDS039 rejects an `output` value that contains
+- [x] MDS039 rejects an unknown recipe name
+- [x] MDS039 rejects a missing `output` param
+- [x] MDS039 rejects an `output` value that contains
       `..` components
-- [ ] MDS039 rejects a `<?build recipe:screenshot?>`
-      that omits the required `url` param
-- [ ] MDS039 warns on a param not in the recipe's
+- [x] MDS039 rejects a directive that omits a
+      required param declared by the recipe
+- [x] MDS039 warns on a param not in the recipe's
       `required` or `optional` lists
-- [ ] A Markdown file cannot introduce a new recipe;
+- [x] A Markdown file cannot introduce a new recipe;
       it can only reference recipes in `.mdsmith.yml`
-      or built-in recipes
-- [ ] `output` accepts any file extension; no
+- [x] `output` accepts any file extension; no
       extension filter is applied
-- [ ] The rendered `body_template` uses `{alt}`
-      defaulting to `"{recipe} output: {output}"`,
-      satisfying MDS032
-- [ ] A user-declared recipe's `body_template` from
+- [x] The rendered `body-template` uses `{alt}`
+      defaulting to `"{recipe} output: {output}"`
+- [x] A user-declared recipe's `body-template` from
       `build.recipes` is used instead of the default
-- [ ] Merge driver regenerates `<?build?>` bodies on
+- [x] Merge driver regenerates `<?build?>` bodies on
       conflict (via `gensection.Engine`)
-- [ ] All tests pass: `go test ./...`
-- [ ] `go tool golangci-lint run` reports no issues
+- [x] All tests pass: `go test ./...`
+- [x] `go tool golangci-lint run` reports no issues
