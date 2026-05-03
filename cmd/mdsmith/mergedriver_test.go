@@ -1190,6 +1190,31 @@ func TestFixAtRealPath_FifthGuardFails_ExitsTwo(t *testing.T) {
 	assert.Contains(t, got, "injected pre-ours-write guard")
 }
 
+func TestFixAtRealPath_FixFails_ExitsTwo(t *testing.T) {
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+
+	pathname := filepath.Join(dir, "PLAN.md")
+	ours := filepath.Join(dir, "ours.md")
+	require.NoError(t, os.WriteFile(pathname, []byte("# Hello\n"), 0o644))
+	require.NoError(t, os.WriteFile(ours, []byte("# Hello\n"), 0o644))
+
+	orig := fixFileInPlaceFn
+	t.Cleanup(func() { fixFileInPlaceFn = orig })
+	fixFileInPlaceFn = func(string, int64) error {
+		return fmt.Errorf("mock fix failure")
+	}
+
+	got := captureStderr(func() {
+		_, code := fixAtRealPath([]byte("# Hello\n"), ours, pathname, 1<<20)
+		assert.Equal(t, 2, code)
+	})
+	assert.Contains(t, got, "fix failed")
+}
+
 func TestFixAtRealPath_PathnameNotExist_RemovesAfterFix(t *testing.T) {
 	// When pathname doesn't exist before the merge, fixAtRealPath should
 	// remove the temp file it created rather than restoring non-existent content.

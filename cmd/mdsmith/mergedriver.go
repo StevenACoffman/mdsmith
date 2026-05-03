@@ -119,6 +119,10 @@ var osWriteFile = os.WriteFile
 // implementation to exercise the read-fixed-file error path in readAndRestore.
 var readFileLimited = lint.ReadFileLimited
 
+// fixFileInPlaceFn is a variable so tests can substitute a failing
+// implementation to exercise the fix-failed error path in fixAtRealPath.
+var fixFileInPlaceFn = fixFileInPlace
+
 // mergeAndClean performs the 3-way merge and strips conflict markers.
 // Returns the cleaned content and an exit code (0 on success).
 func mergeAndClean(base, ours, theirs string, maxBytes int64) ([]byte, int) {
@@ -262,7 +266,7 @@ func fixAtRealPath(cleaned []byte, ours, pathname string, maxBytes int64) ([]byt
 		return nil, 2
 	}
 
-	fixErr := fixFileInPlace(pathname, maxBytes)
+	fixErr := fixFileInPlaceFn(pathname, maxBytes)
 
 	fixed, code := readAndRestore(pathname, backup, backupErr, pathnameMode, maxBytes)
 	if code != 0 {
