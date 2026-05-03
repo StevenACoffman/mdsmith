@@ -23,6 +23,10 @@ import (
 // to exercise the os.WriteFile error path in WriteGitattributes.
 var writeFile = os.WriteFile
 
+// chmodFile is a variable so tests can substitute a failing implementation
+// to exercise the os.Chmod error path in WriteGitattributes.
+var chmodFile = os.Chmod
+
 // PreMergeCommitMarker is the comment line written into the
 // pre-merge-commit hook so that mdsmith (and the git-hook-sync rule)
 // can recognise hooks it manages without stomping on user-authored
@@ -776,7 +780,7 @@ func WriteGitattributes(path string, globs Globs) error {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
 	if existed {
-		if err := os.Chmod(path, mode); err != nil {
+		if err := chmodFile(path, mode); err != nil {
 			return fmt.Errorf("chmod %s: %w", path, err)
 		}
 	}
