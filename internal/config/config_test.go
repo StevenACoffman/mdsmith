@@ -47,6 +47,7 @@ import (
 	_ "github.com/jeduden/mdsmith/internal/rules/noreferencestyle"
 	_ "github.com/jeduden/mdsmith/internal/rules/nospaceincodespans"
 	_ "github.com/jeduden/mdsmith/internal/rules/nospaceinlinktext"
+	_ "github.com/jeduden/mdsmith/internal/rules/noundefinedreferencelabels"
 	_ "github.com/jeduden/mdsmith/internal/rules/notrailingpunctuation"
 	_ "github.com/jeduden/mdsmith/internal/rules/notrailingspaces"
 	_ "github.com/jeduden/mdsmith/internal/rules/nounusedlinkdefinitions"

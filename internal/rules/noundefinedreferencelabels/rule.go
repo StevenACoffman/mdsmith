@@ -115,7 +115,7 @@ func collectPIBlockLines(f *lint.File) map[int]bool {
 	return lines
 }
 
-// byteRange is an inclusive [start, end) byte range.
+// byteRange is a half-open [start, end) byte range.
 type byteRange struct{ start, end int }
 
 // collectCodeSpanRanges returns byte ranges of inline code spans.
