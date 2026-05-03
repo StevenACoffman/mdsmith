@@ -62,13 +62,14 @@ rules:
 For each configured name, the rule scans prose text for
 case-insensitive matches that start at a word boundary. The byte
 immediately before the match in the full source must be a
-non-alphanumeric, non-underscore character, or the match must
-begin at the start of the file. Only the **left** boundary is
-enforced — there is no right-boundary check. For example,
-`Javascripts` (wrong case) matches `JavaScript` at the left
-boundary; the rule reports and fixes the `Javascripts` prefix to
-`JavaScript`, leaving the trailing `s` unchanged. Correctly-cased
-prefixes in longer words (e.g. `JavaScripts`) are not flagged.
+non-ASCII-letter, non-ASCII-digit, non-underscore character (i.e.
+not in `[A-Za-z0-9_]`), or the match must begin at the start of
+the file. Only the **left** boundary is enforced — there is no
+right-boundary check. For example, `Javascripts` (wrong case)
+matches `JavaScript` at the left boundary; the rule reports and
+fixes the `Javascripts` prefix to `JavaScript`, leaving the
+trailing `s` unchanged. Correctly-cased prefixes in longer words
+(e.g. `JavaScripts`) are not flagged.
 When the matched bytes differ from the canonical spelling, a
 diagnostic is emitted.
 
