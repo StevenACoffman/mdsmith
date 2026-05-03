@@ -284,7 +284,8 @@ func (r *Rule) scanShortcutRefs(
 		if excluded(f.LineOfOffset(start)) || inCodeSpan(spans, start) {
 			continue
 		}
-		// Skip if followed by '[', '(', or ':' (full/collapsed ref or definition).
+		// Skip if followed by '[' (full/collapsed ref) or '(' (inline link).
+		// Reference definition lines are excluded separately via defLines.
 		if end < len(source) {
 			next := source[end]
 			if next == '[' || next == '(' {

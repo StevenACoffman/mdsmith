@@ -18,11 +18,11 @@ definition in the same file.
 
 ### `shortcut` values
 
-| Value            | Behaviour                                                                                          |
-|------------------|----------------------------------------------------------------------------------------------------|
-| `heuristic`      | Flag bare `[label]` only when the label has no spaces and contains a digit, hyphen, or underscore. |
-| `always`         | Flag every bare `[label]` whose definition is missing.                                             |
-| `collapsed-only` | Only flag `[text][label]` (full) and `[label][]` (collapsed) forms; never bare `[label]`.          |
+| Value            | Behaviour                                                                                                                                                                      |
+|------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `heuristic`      | Flag bare `[label]` only when the label has no spaces and contains a digit, hyphen, or underscore. Image shortcuts (`![label]`) are always checked regardless of this setting. |
+| `always`         | Flag every bare `[label]` whose definition is missing.                                                                                                                         |
+| `collapsed-only` | Only flag `[text][label]` (full) and `[label][]` (collapsed) forms; never bare `[label]`.                                                                                      |
 
 ## Config
 
