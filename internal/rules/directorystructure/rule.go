@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/bmatcuk/doublestar/v4"
-	"github.com/jeduden/mdsmith/internal/globpath"
 	"github.com/jeduden/mdsmith/internal/lint"
 	"github.com/jeduden/mdsmith/internal/rule"
 )
@@ -109,7 +108,10 @@ func (r *Rule) isAllowed(filePath string) bool {
 			}
 			continue
 		}
-		if globpath.Match(pattern, cleaned) {
+		if ok, _ := doublestar.Match(
+			filepath.ToSlash(pattern),
+			cleaned,
+		); ok {
 			return true
 		}
 	}

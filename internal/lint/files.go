@@ -18,7 +18,7 @@ func isMarkdown(path string) bool {
 
 // hasGlobChars returns true if the string contains glob meta-characters.
 func hasGlobChars(s string) bool {
-	return strings.ContainsAny(s, "*?[")
+	return strings.ContainsAny(s, "*?[{")
 }
 
 // ResolveOpts controls how file resolution behaves.

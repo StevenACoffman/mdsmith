@@ -140,9 +140,11 @@ doesn't grasp.
       shared matcher; `gobwas/glob` and the stdlib
       `filepath.Glob` are no longer imported by
       production code.
-- [x] `**` recursion, brace expansion, and `!`-prefix
-      exclusion behave identically across all three
-      surfaces (covered by tests).
+- [x] `**` recursion and brace expansion work on all
+      surfaces (covered by tests). `!`-prefix exclusion
+      works on config and directive surfaces; CLI
+      positional-argument exclusion is not yet implemented
+      — use `ignore:` in `.mdsmith.yml` instead.
 - [x] `overrides:` and `kind-assignment:` accept
       `glob:` as the canonical key. `files:` continues
       to work and emits a deprecation warning naming

@@ -9,8 +9,9 @@ summary: >-
 mdsmith uses [`doublestar`](https://github.com/bmatcuk/doublestar) as
 its single glob matcher across all surfaces. These include config
 (`ignore:`, `overrides:`, `kind-assignment:`), the `<?catalog?>`
-directive, and CLI argument expansion. The syntax and
-`!`-exclusion semantics are identical on every surface.
+directive, and CLI argument expansion. The pattern syntax
+is identical on every surface; `!`-exclusion is supported
+on config and directive surfaces but not on CLI arguments.
 
 ## Surfaces
 
