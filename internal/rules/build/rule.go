@@ -172,7 +172,7 @@ func (r *Rule) validateHard(
 		)}
 	}
 
-	if filepath.IsAbs(output) {
+	if filepath.IsAbs(output) || filepath.VolumeName(output) != "" {
 		return []lint.Diagnostic{gensection.MakeDiag(
 			r.RuleID(), r.RuleName(), filePath, line,
 			fmt.Sprintf(`build directive "output" must be a relative path: %q`, output),
@@ -259,8 +259,7 @@ func (r *Rule) generateBody(
 	}
 
 	alt := fmt.Sprintf("%s output: %s", recipeName, output)
-	body := strings.ReplaceAll(tmpl, "{alt}", alt)
-	body = strings.ReplaceAll(body, "{output}", output)
+	body := strings.NewReplacer("{alt}", alt, "{output}", output).Replace(tmpl)
 
 	return gensection.EnsureTrailingNewline(body), nil
 }
@@ -299,9 +298,11 @@ func parseRecipesSettings(v any) (map[string]recipeSchema, error) {
 		}
 		schema := recipeSchema{}
 		if bt, ok := rm["body-template"]; ok {
-			if s, ok := bt.(string); ok {
-				schema.BodyTemplate = s
+			s, ok := bt.(string)
+			if !ok {
+				return nil, fmt.Errorf("recipe %q: body-template must be a string, got %T", name, bt)
 			}
+			schema.BodyTemplate = s
 		}
 		if rawParams, hasParams := rm["params"]; hasParams {
 			paramsMap, ok := rawParams.(map[string]any)

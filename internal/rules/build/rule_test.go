@@ -138,6 +138,7 @@ func TestValidateHard_AbsoluteOutput(t *testing.T) {
 	assert.Contains(t, diags[0].Message, "relative path")
 }
 
+
 func TestValidateHard_EmptyRequiredParamValue(t *testing.T) {
 	r := ruleWithRender()
 	diags := r.validateHard("test.md", 1, map[string]string{
@@ -361,6 +362,19 @@ func TestCheck_MalformedDirectiveYAML(t *testing.T) {
 }
 
 // --- parseRecipesSettings error branches ---
+
+func TestApplySettings_Recipes_BodyTemplateNotString(t *testing.T) {
+	r := &Rule{}
+	err := r.ApplySettings(map[string]any{
+		"recipes": map[string]any{
+			"x": map[string]any{
+				"body-template": 42,
+			},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "body-template must be a string")
+}
 
 func TestApplySettings_Recipes_RecipeNotMap(t *testing.T) {
 	r := &Rule{}
