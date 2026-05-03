@@ -144,10 +144,26 @@ func TestEmptyLinkTextFix(t *testing.T) {
 }
 
 func TestLinkWithImageChild(t *testing.T) {
-	// [![img](img.png)](url) — link's first child is Image, not Text.
-	// bracketSpan returns (-1,-1) and the outer link is skipped.
+	// [![img](img.png)](url) — outer link wraps an image with clean alt text.
+	// bracketSpan skips Image subtrees so the outer link returns (-1,-1).
+	// The inner image is still visited and has no whitespace in alt text.
 	diags := check(t, "# T\n\n[![img](img.png)](url)\n", true)
 	assert.Empty(t, diags)
+}
+
+func TestLinkWithImageChildSpacedAlt(t *testing.T) {
+	// [![ alt ](img.png)](url) — inner image has leading/trailing space in alt.
+	// The outer link is skipped; the inner image produces two diagnostics.
+	diags := check(t, "# T\n\n[![ alt ](img.png)](url)\n", true)
+	require.Len(t, diags, 2)
+	msgs := []string{diags[0].Message, diags[1].Message}
+	assert.Contains(t, msgs, "image alt text has leading whitespace")
+	assert.Contains(t, msgs, "image alt text has trailing whitespace")
+}
+
+func TestLinkWithImageChildFixSpacedAlt(t *testing.T) {
+	result := fix(t, "# T\n\n[![ alt ](img.png)](url)\n", true)
+	assert.Equal(t, "# T\n\n[![alt](img.png)](url)\n", result)
 }
 
 func TestBracketInLinkText(t *testing.T) {

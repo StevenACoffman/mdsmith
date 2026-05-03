@@ -62,13 +62,22 @@ func (r *Rule) DefaultSettings() map[string]any {
 // may precede the first text). The forward scan uses depth tracking and skips
 // backslash-escaped brackets to find the correct closing `]`.
 func bracketSpan(n ast.Node, source []byte) (open, close int) {
-	// Find the earliest byte position among all descendant Text nodes. Walking
-	// all descendants (not just direct children) handles cases where the first
-	// inline node is emphasis, a code span, or another non-text node.
+	// Find the earliest byte position among all descendant Text nodes, but
+	// skip Image subtrees. Walking all descendants (not just direct children)
+	// handles cases where the first inline node is emphasis or a code span.
+	// Skipping Image subtrees prevents a link wrapping an image (e.g.
+	// [![alt](img)](url)) from picking up text inside the image's alt span
+	// and scanning to the wrong `[`.
 	minStart := -1
 	_ = ast.Walk(n, func(child ast.Node, entering bool) (ast.WalkStatus, error) {
-		if !entering || child == n {
+		if !entering {
 			return ast.WalkContinue, nil
+		}
+		if child == n {
+			return ast.WalkContinue, nil
+		}
+		if _, ok := child.(*ast.Image); ok {
+			return ast.WalkSkipChildren, nil
 		}
 		t, ok := child.(*ast.Text)
 		if !ok {
@@ -157,7 +166,7 @@ func (r *Rule) collectSpans(f *lint.File) []span {
 			return ast.WalkContinue, nil
 		}
 		spans = append(spans, span{open: open, close: close, img: img})
-		return ast.WalkSkipChildren, nil
+		return ast.WalkContinue, nil
 	})
 	return spans
 }
