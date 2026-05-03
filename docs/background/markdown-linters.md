@@ -249,7 +249,7 @@ Weaknesses:
 | Emphasis style      | planned ([plan 106][plan106])  | [MD049][md049], [MD050][md050]           | [emphasis-marker][rl-em]                          |
 | HR style            | planned ([plan 108][plan108])  | [MD035][md035]                           | [rule-style][rl-rs]                               |
 | Ambiguous emphasis  | planned ([plan 111][plan111])  | [MD037][md037]                           | no                                                |
-| Space in code       | planned ([plan 124][plan124])  | [MD038][md038]                           | no                                                |
+| Space in code       | [MDS052][mds052]               | [MD038][md038]                           | no                                                |
 | Space in links      | planned ([plan 125][plan125])  | [MD039][md039]                           | no                                                |
 | Proper names        | planned ([plan 126][plan126])  | [MD044][md044]                           | no                                                |
 | Required headings   | [MDS020][mds020] (via schema)  | [MD043][md043]                           | no                                                |
@@ -642,6 +642,7 @@ you need a stable rule set while these land.
 [mds035]: ../../internal/rules/MDS035-toc-directive/README.md
 [mds038]: ../../internal/rules/MDS038-toc/README.md
 [mds046]: ../../internal/rules/MDS046-ordered-list-numbering/README.md
+[mds052]: ../../internal/rules/MDS052-no-space-in-code-spans/README.md
 <!-- markdownlint links -->
 [markdownlint]: https://github.com/DavidAnson/markdownlint
 [markdownlint-cli2]: https://github.com/DavidAnson/markdownlint-cli2
