@@ -54,6 +54,14 @@ func Load(path string) (*Config, error) {
 				"or remove the key")
 	}
 
+	if keys["archetypes"] {
+		cfg.Deprecations = append(cfg.Deprecations,
+			"config key `archetypes` has been removed; "+
+				"set `required-structure.schema:` to an explicit path, "+
+				"or declare a kind under `kinds:` — "+
+				"see docs/guides/file-kinds.md")
+	}
+
 	if err := ValidateKinds(&cfg); err != nil {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
