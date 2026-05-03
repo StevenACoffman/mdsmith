@@ -1154,6 +1154,21 @@ func TestAtomicWriteGitattributes_WriteFails_ReturnsError(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestAtomicWriteGitattributes_SyncFails_ReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".gitattributes")
+
+	orig := syncTempFn
+	t.Cleanup(func() { syncTempFn = orig })
+	syncTempFn = func(*os.File) error {
+		return fmt.Errorf("mock sync failure")
+	}
+
+	err := atomicWriteGitattributes(path, []byte("content"), 0o644)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mock sync failure")
+}
+
 func TestAtomicWriteGitattributes_CloseFails_ReturnsError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".gitattributes")

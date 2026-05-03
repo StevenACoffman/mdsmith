@@ -788,7 +788,7 @@ func writeGitattributesFile(path, content string) error {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("writing %s: not a regular file", path)
 		}
-		mode = info.Mode().Perm()
+		mode = info.Mode() &^ os.ModeType
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("writing %s: lstat: %w", path, err)
 	}
@@ -801,6 +801,7 @@ func writeGitattributesFile(path, content string) error {
 // createTempFn, closeTempFn, and chmodFn are variables so tests can inject
 // failures into atomicWriteGitattributes without needing OS-level tricks.
 var createTempFn = os.CreateTemp
+var syncTempFn = (*os.File).Sync
 var closeTempFn = (*os.File).Close
 var chmodFn = os.Chmod
 
@@ -817,6 +818,10 @@ func atomicWriteGitattributes(path string, data []byte, mode os.FileMode) error 
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
 	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := syncTempFn(tmp); err != nil {
 		_ = tmp.Close()
 		return err
 	}
