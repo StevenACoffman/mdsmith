@@ -11,7 +11,7 @@ on:
     outputs:
       artifact-name:
         description: Name of the uploaded GIF artifact
-        value: demo-gif
+        value: ${{ jobs.record.outputs.artifact-name }}
 
 permissions:
   contents: read
@@ -19,6 +19,8 @@ permissions:
 jobs:
   record:
     runs-on: ubuntu-latest
+    outputs:
+      artifact-name: demo-gif
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -41,8 +43,14 @@ jobs:
           # go-rod (used by VHS) finds it via launcher.LookPath().
           # ffmpeg, ttyd, and vhs are installed from upstream
           # static/release binaries (verified by SHA-256) and
-          # cached in ~/vhs-bin/ to skip the slow apt-get update
-          # path on subsequent runs.
+          # cached in ~/vhs-bin/. We download from upstream rather
+          # than `apt-get install` because the apt path requires a
+          # `apt-get update` that adds ~25-30s per cache miss.
+          #
+          # The ffmpeg URL points to johnvansickle.com's "release"
+          # (latest) build; when upstream rebuilds the tarball the
+          # pinned SHA-256 below will fail-loud, prompting a version
+          # bump here and in the cache key. This is intentional.
           if [ -f ~/vhs-bin/ffmpeg ]; then
             sudo install ~/vhs-bin/ffmpeg /usr/local/bin/ffmpeg
           else
