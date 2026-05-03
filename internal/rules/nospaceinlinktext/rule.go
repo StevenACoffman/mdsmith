@@ -54,38 +54,43 @@ func (r *Rule) DefaultSettings() map[string]any {
 	}
 }
 
-// bracketSpan returns the byte range of text inside the opening `[` and its
-// matching `]` for a link or image node. It reads from f.Source starting at
-// the node's first child's segment start, scanning backward for `[`.
-// Returns (-1, -1) if the span cannot be found.
+// bracketSpan returns the byte range of the opening `[` and its matching `]`
+// for a link or image node. Returns (-1, -1) if the span cannot be determined.
+//
+// It walks all descendant Text nodes to find the earliest source position, then
+// scans backward for `[` (handling emphasis, code, and other inline markers that
+// may precede the first text). The forward scan uses depth tracking and skips
+// backslash-escaped brackets to find the correct closing `]`.
 func bracketSpan(n ast.Node, source []byte) (open, close int) {
-	// Find the start of the node's content by looking at the first child's segment.
-	// For links/images, walk children to find the first text segment.
-	textStart := -1
-	for child := n.FirstChild(); child != nil; child = child.NextSibling() {
-		if t, ok := child.(*ast.Text); ok {
-			textStart = t.Segment.Start
-			break
+	// Find the earliest byte position among all descendant Text nodes. Walking
+	// all descendants (not just direct children) handles cases where the first
+	// inline node is emphasis, a code span, or another non-text node.
+	minStart := -1
+	_ = ast.Walk(n, func(child ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering || child == n {
+			return ast.WalkContinue, nil
 		}
-	}
+		t, ok := child.(*ast.Text)
+		if !ok {
+			return ast.WalkContinue, nil
+		}
+		if minStart == -1 || t.Segment.Start < minStart {
+			minStart = t.Segment.Start
+		}
+		return ast.WalkContinue, nil
+	})
 
-	// If no text child, node may be empty (e.g. ![](url)); search from a
-	// position derived from the image/link's known structure. We use the
-	// node's first child position if available, or skip.
-	if textStart == -1 {
-		// Try raw base segment if it exists (Image/Link may have it).
+	if minStart == -1 {
 		return -1, -1
 	}
 
-	// Scan backward to find the `[` character (skipping `!` for images).
+	// Scan backward from the first content byte to find the opening `[`.
+	// Any inline formatting bytes (*, _, `, etc.) between `[` and the first
+	// text are passed over without restriction.
 	openBracket := -1
-	for i := textStart - 1; i >= 0; i-- {
+	for i := minStart - 1; i >= 0; i-- {
 		if source[i] == '[' {
 			openBracket = i
-			break
-		}
-		// Only whitespace or `!` should appear between the start and `[`.
-		if source[i] != ' ' && source[i] != '\t' && source[i] != '!' {
 			break
 		}
 	}
@@ -93,11 +98,16 @@ func bracketSpan(n ast.Node, source []byte) (open, close int) {
 		return -1, -1
 	}
 
-	// Scan forward from textStart to find the matching `]`.
-	// We track bracket depth because link text can itself contain brackets.
+	// Scan forward from openBracket+1 to find the matching `]`, tracking
+	// bracket depth. Backslash-escaped brackets are skipped so that `\]`
+	// inside link text does not terminate the scan prematurely.
 	depth := 1
-	i := textStart
+	i := openBracket + 1
 	for i < len(source) && depth > 0 {
+		if source[i] == '\\' && i+1 < len(source) {
+			i += 2
+			continue
+		}
 		switch source[i] {
 		case '[':
 			depth++

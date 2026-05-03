@@ -36,6 +36,7 @@ rules:
 <?include
 file: bad/leading-and-trailing.md
 wrap: markdown
+strip-frontmatter: "true"
 ?>
 
 ```markdown
