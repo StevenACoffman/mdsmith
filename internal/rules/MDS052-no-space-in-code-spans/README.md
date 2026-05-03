@@ -13,8 +13,10 @@ CommonMark strips one space from each side of a code span when the
 content starts *and* ends with a space and is not entirely whitespace
 (`` ` x ` `` → `x`, `` `  x ` `` → `` ` x` ``). Whitespace that
 remains after this normalisation — a double space on one side, a tab,
-a space on only one side, or a newline — renders verbatim. This rule
-flags those cases.
+or a space on only one side — renders verbatim. Newlines inside code
+spans are normalised to spaces by CommonMark, so a leading or trailing
+newline renders as a leading or trailing space. This rule flags all of
+those cases.
 
 ## Settings
 
@@ -118,7 +120,9 @@ Use `foo bar` for multi-word.
 - **Name**: `no-space-in-code-spans`
 - **Status**: ready
 - **Default**: disabled, opt-in
-- **Fixable**: yes (trims whitespace; empty-after-trim spans are not auto-fixed)
+- **Fixable**: yes (trims whitespace; spans that are empty after trimming or
+  whose trimmed content starts/ends with a backtick adjacent to a delimiter
+  are left unchanged or have a single protective space preserved)
 - **Implementation**:
   [source](./)
 - **Category**: whitespace

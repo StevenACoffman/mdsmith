@@ -41,8 +41,8 @@ const (
 // CommonMark's single-space-trim rule (one space stripped from each side
 // when both sides have one and the content is not all spaces). Inspecting
 // the post-trim segment avoids false positives on spans like “ `  x ` “
-// where only the leading double-space is visible after CommonMark normalises
-// the source.
+// where only one leading space remains visible after CommonMark strips one
+// from each side.
 func (r *Rule) Check(f *lint.File) []lint.Diagnostic {
 	var diags []lint.Diagnostic
 	_ = ast.Walk(f.AST, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
