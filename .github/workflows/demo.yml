@@ -55,8 +55,14 @@ jobs:
           if [ -f ~/vhs-bin/vhs ]; then
             sudo install ~/vhs-bin/vhs /usr/local/bin/vhs
           else
+            case "${{ runner.arch }}" in
+              X64)   vhs_arch="x86_64"; vhs_sha256="b552c3870aca101dcafe533cfef32dceb7b783400ad32642e728775c9f125407" ;;
+              ARM64) vhs_arch="arm64";  vhs_sha256="6d7300028d4641b9dc004a05cf411d40f1e12e560cc6fca985dd90504b6652a7" ;;
+              *) echo "Unsupported arch: ${{ runner.arch }}" >&2; exit 1 ;;
+            esac
             curl -fsSL -o /tmp/vhs.tar.gz \
-              "https://github.com/charmbracelet/vhs/releases/download/v0.10.0/vhs_Linux_x86_64.tar.gz"
+              "https://github.com/charmbracelet/vhs/releases/download/v0.10.0/vhs_0.10.0_Linux_${vhs_arch}.tar.gz"
+            echo "${vhs_sha256}  /tmp/vhs.tar.gz" | sha256sum -c
             tar -xzf /tmp/vhs.tar.gz -C /tmp vhs
             sudo install /tmp/vhs /usr/local/bin/vhs
           fi
