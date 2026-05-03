@@ -1,7 +1,7 @@
 ---
 id: 127
 title: Single H1 per file rule
-status: "🔲"
+status: "✅"
 summary: >-
   New rule MDS051 that requires at most one top-level
   H1 heading per Markdown file. Closes the gap with
@@ -125,27 +125,27 @@ h1 heading conflicts with front-matter title
 
 ## Acceptance Criteria
 
-- [ ] A file with one H1 and several H2/H3 headings
+- [x] A file with one H1 and several H2/H3 headings
       emits no diagnostic.
-- [ ] A file with no headings emits no diagnostic.
-- [ ] A file with two H1s emits one diagnostic on
+- [x] A file with no headings emits no diagnostic.
+- [x] A file with two H1s emits one diagnostic on
       the second H1; auto-fix demotes it to H2.
-- [ ] A file with three H1s emits two diagnostics;
+- [x] A file with three H1s emits two diagnostics;
       auto-fix demotes the second and third.
-- [ ] A setext H1 (`Title\n====`) past the first H1
+- [x] A setext H1 (`Title\n====`) past the first H1
       is auto-fixed to setext H2 (`Title\n----`).
-- [ ] A file with front-matter `title: Foo` and an
+- [x] A file with front-matter `title: Foo` and an
       in-document H1 emits one diagnostic with the
       "conflicts with front-matter title" message;
       no auto-fix is applied.
-- [ ] Setting `front-matter-title: ""` suppresses
+- [x] Setting `front-matter-title: ""` suppresses
       the front-matter check; an in-document H1
       passes regardless of YAML.
-- [ ] Rule is disabled by default.
-- [ ] MDS004 (first-line-heading) still passes on
+- [x] Rule is disabled by default.
+- [x] MDS004 (first-line-heading) still passes on
       the same fixtures.
-- [ ] All tests pass: `go test ./...`
-- [ ] `go tool golangci-lint run` reports no issues
-- [ ] `mdsmith check .` passes on the repo with the
+- [x] All tests pass: `go test ./...`
+- [x] `go tool golangci-lint run` reports no issues
+- [x] `mdsmith check .` passes on the repo with the
       rule disabled (no regression for existing
       docs).
