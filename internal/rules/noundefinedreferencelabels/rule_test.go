@@ -162,6 +162,33 @@ func TestFullRefImage_Undefined_Flagged(t *testing.T) {
 	assert.Contains(t, diags[0].Message, `"broken"`)
 }
 
+func TestCollapsedRefImage_Undefined_Flagged(t *testing.T) {
+	src := "![logo][]\n"
+	diags := check(t, src)
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, `"logo"`)
+	assert.Equal(t, 1, diags[0].Column) // column points to '!'
+}
+
+func TestCollapsedRefImage_Defined_NoDiag(t *testing.T) {
+	src := "![logo][]\n\n[logo]: https://example.com/img.png\n"
+	assert.Empty(t, check(t, src))
+}
+
+func TestShortcutRefImage_Undefined_Flagged(t *testing.T) {
+	// Image shortcuts bypass the heuristic since '!' makes intent unambiguous.
+	src := "See ![logo] inline.\n"
+	diags := check(t, src)
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, `"logo"`)
+	assert.Equal(t, 5, diags[0].Column) // column points to '!'
+}
+
+func TestShortcutRefImage_Defined_NoDiag(t *testing.T) {
+	src := "See ![logo] inline.\n\n[logo]: https://example.com/img.png\n"
+	assert.Empty(t, check(t, src))
+}
+
 func TestFullRefImage_Defined_NoDiag(t *testing.T) {
 	src := "![alt][img]\n\n[img]: https://example.com/a.png\n"
 	assert.Empty(t, check(t, src))
@@ -210,4 +237,73 @@ func TestSettingMergeMode(t *testing.T) {
 	r := &Rule{}
 	assert.Equal(t, rule.MergeAppend, r.SettingMergeMode("placeholders"))
 	assert.Equal(t, rule.MergeReplace, r.SettingMergeMode("shortcut"))
+}
+
+// --- Additional coverage tests ---
+
+func TestApplySettings_ShortcutWrongType(t *testing.T) {
+	r := &Rule{}
+	assert.Error(t, r.ApplySettings(map[string]any{"shortcut": 42}))
+}
+
+func TestApplySettings_PlaceholdersWrongType(t *testing.T) {
+	r := &Rule{}
+	assert.Error(t, r.ApplySettings(map[string]any{"placeholders": 42}))
+}
+
+func TestApplySettings_PlaceholdersInvalidToken(t *testing.T) {
+	r := &Rule{}
+	assert.Error(t, r.ApplySettings(map[string]any{"placeholders": []any{"not-a-token"}}))
+}
+
+func TestApplySettings_PlaceholdersStringSlice(t *testing.T) {
+	r := &Rule{}
+	require.NoError(t, r.ApplySettings(map[string]any{"placeholders": []string{"var-token"}}))
+	assert.Equal(t, []string{"var-token"}, r.Placeholders)
+}
+
+func TestApplySettings_PlaceholdersNonStringItem(t *testing.T) {
+	r := &Rule{}
+	assert.Error(t, r.ApplySettings(map[string]any{"placeholders": []any{42}}))
+}
+
+func TestFullRef_FootnoteLike_NotFlagged(t *testing.T) {
+	// [^note][label] looks like a full ref but the text starts with '^' — skip.
+	src := "A [^note][ref] here.\n"
+	assert.Empty(t, check(t, src))
+}
+
+func TestCollapsedRef_InCodeBlock_NotFlagged(t *testing.T) {
+	src := "```\n[broken][]\n```\n"
+	assert.Empty(t, check(t, src))
+}
+
+func TestCollapsedRef_FootnoteLike_NotFlagged(t *testing.T) {
+	// [^note][] — text starts with '^', treated as footnote-like, not a collapsed ref.
+	src := "A [^note][] here.\n"
+	assert.Empty(t, check(t, src))
+}
+
+func TestCollapsedRef_Placeholder_NotFlagged(t *testing.T) {
+	src := "See [{title}][].\n"
+	r := &Rule{Placeholders: []string{"var-token"}}
+	assert.Empty(t, checkWith(t, src, r))
+}
+
+func TestShortcutRef_LooksLikeRef_StartsWithDigit_NotFlagged(t *testing.T) {
+	// Label starts with digit (e.g. [0-9]) — heuristic skips it.
+	src := "Pattern [0-9] here.\n"
+	assert.Empty(t, check(t, src))
+}
+
+func TestPIBlock_ContentNotFlagged(t *testing.T) {
+	// Reference patterns inside a PI block should not produce diagnostics.
+	src := "# Title\n\n<?note\n[broken][ref]\n[broken][]\n?>\n\nText after.\n"
+	assert.Empty(t, check(t, src))
+}
+
+func TestCodeSpan_NoBacktickExtension_NotFlagged(t *testing.T) {
+	// Code span content immediately adjacent to backtick (no padding spaces).
+	src := "Use `[broken][ref]` here.\n"
+	assert.Empty(t, check(t, src))
 }

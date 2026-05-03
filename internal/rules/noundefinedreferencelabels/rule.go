@@ -198,16 +198,12 @@ func (r *Rule) scanFullRefs(
 		if excluded(f.LineOfOffset(start)) || inCodeSpan(spans, start) {
 			continue
 		}
-		// Skip images: check for '!' before the '['.
-		// Images are valid syntax even when undefined so we also flag them,
-		// but we need the label from group 2.
+		// The label comes from group 2 (the second bracket pair).
 		label := source[m[4]:m[5]]
-		// Skip footnote-like: [^...][...]
+		// Skip footnote-like [^...][...]: text starting with '^' is a footnote reference.
 		if len(source[m[2]:m[3]]) > 0 && source[m[2]] == '^' {
 			continue
 		}
-		// Skip reference definitions: the match must not be at line-start with ':'
-		// A full ref [A][B] can't be a definition, so no extra check needed.
 		normalized := normalizeLabel(label)
 		if placeholders.ContainsBodyToken(string(label), r.Placeholders) {
 			continue
@@ -261,8 +257,9 @@ func (r *Rule) scanCollapsedRefs(
 	return diags
 }
 
-// shortcutRE matches [label] not preceded by '!' image prefix check is done separately.
-// We match [label] that is NOT followed by '[', '(', or ':' (definition).
+// shortcutRE matches [label] forms. The caller filters out cases that are
+// followed by '[' or '(' (full/collapsed refs and inline links), lines that
+// are reference definitions, and — for image shortcuts — checks for '!' prefix.
 var shortcutRE = regexp.MustCompile(`\[([^\[\]\n^][^\[\]\n]*)\]`)
 
 // refDefStartRE detects a reference definition at a given line start.
@@ -303,13 +300,19 @@ func (r *Rule) scanShortcutRefs(
 		if placeholders.ContainsBodyToken(string(label), r.Placeholders) {
 			continue
 		}
-		// Under heuristic mode, only flag if the label looks like a reference target.
-		if shortcutMode == shortcutHeuristic && !looksLikeRefTarget(string(label)) {
+		// Detect image shortcut ![label]: the '!' immediately precedes '['.
+		isImage := start > 0 && source[start-1] == '!'
+		// Under heuristic mode, only flag if the label looks like a reference
+		// target — but always flag image shortcuts since '!' makes intent clear.
+		if !isImage && shortcutMode == shortcutHeuristic && !looksLikeRefTarget(string(label)) {
 			continue
 		}
 		if !defs[normalized] {
 			line := f.LineOfOffset(start)
 			col := f.ColumnOfOffset(start)
+			if isImage {
+				col = f.ColumnOfOffset(start - 1)
+			}
 			diags = append(diags, r.diag(f.Path, line, col,
 				fmt.Sprintf("reference label %q has no matching link reference definition", string(label))))
 		}
