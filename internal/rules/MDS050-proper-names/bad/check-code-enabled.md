@@ -10,6 +10,6 @@ diagnostics:
 ---
 # Code Block Checked
 
-```
+```sh
 javascript --version
 ```

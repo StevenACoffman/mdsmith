@@ -241,7 +241,7 @@ func TestScanBytes_NameLongerThanText_Skipped(t *testing.T) {
 
 func TestScanBytes_EmptyText_Skipped(t *testing.T) {
 	r := &Rule{Names: []string{"JavaScript"}}
-	results := r.scanBytes([]byte{}, 0, []byte{})
+	results := scanBytes(r.buildNameEntries(), []byte{}, 0, []byte{})
 	assert.Nil(t, results)
 }
 
@@ -252,7 +252,7 @@ func TestScanCodeSpanChildren_NonTextChild_Skipped(t *testing.T) {
 	cs := ast.NewCodeSpan()
 	// ast.NewString is an inline node that is not *ast.Text, making the !ok branch reachable.
 	cs.AppendChild(cs, ast.NewString([]byte("javascript")))
-	out := r.scanCodeSpanChildren(cs, f)
+	out := scanCodeSpanChildren(r.buildNameEntries(), cs, f)
 	assert.Nil(t, out)
 }
 

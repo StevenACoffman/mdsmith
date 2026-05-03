@@ -72,25 +72,47 @@ type wrongMatch struct {
 	name   string
 }
 
-// scanBytes finds all wrong-cased occurrences of r.Names within the text
+// nameEntry holds the precomputed byte representations of one configured name.
+// Built once per Check/Fix call and reused across all text segments.
+type nameEntry struct {
+	canonical []byte // original spelling, e.g. []byte("JavaScript")
+	lower     []byte // ASCII-lowercased, e.g. []byte("javascript")
+	str       string // canonical as string, used in diagnostics
+}
+
+// buildNameEntries precomputes nameEntry values for all configured names.
+func (r *Rule) buildNameEntries() []nameEntry {
+	entries := make([]nameEntry, 0, len(r.Names))
+	for _, name := range r.Names {
+		if len(name) == 0 {
+			continue
+		}
+		b := []byte(name)
+		entries = append(entries, nameEntry{
+			canonical: b,
+			lower:     asciiToLower(b),
+			str:       name,
+		})
+	}
+	return entries
+}
+
+// scanBytes finds all wrong-cased occurrences of entries within the text
 // slice, which starts at baseOffset in the full source. source is the full
 // file source (used for left-boundary checks before the segment start).
-func (r *Rule) scanBytes(text []byte, baseOffset int, source []byte) []wrongMatch {
-	if len(r.Names) == 0 || len(text) == 0 {
+func scanBytes(entries []nameEntry, text []byte, baseOffset int, source []byte) []wrongMatch {
+	if len(entries) == 0 || len(text) == 0 {
 		return nil
 	}
 	// Lowercase the segment once; reused for every configured name.
 	// asciiToLower never changes byte length, keeping offsets stable.
 	lowerText := asciiToLower(text)
 	var results []wrongMatch
-	for _, name := range r.Names {
-		n := len(name)
-		if n == 0 || n > len(text) {
+	for _, e := range entries {
+		n := len(e.canonical)
+		if n > len(text) {
 			continue
 		}
-		// Lowercase the name once per name, not once per position.
-		nameBytes := []byte(name)
-		lowerName := asciiToLower(nameBytes)
 		for i := 0; i <= len(lowerText)-n; i++ {
 			// Left boundary: the byte before the match (in source) must not
 			// be a word character, or the match is at the start of the source.
@@ -99,17 +121,17 @@ func (r *Rule) scanBytes(text []byte, baseOffset int, source []byte) []wrongMatc
 				continue
 			}
 			// Case-insensitive prefix match.
-			if !bytes.Equal(lowerText[i:i+n], lowerName) {
+			if !bytes.Equal(lowerText[i:i+n], e.lower) {
 				continue
 			}
 			// Skip if casing already matches the canonical spelling.
-			if bytes.Equal(text[i:i+n], nameBytes) {
+			if bytes.Equal(text[i:i+n], e.canonical) {
 				continue
 			}
 			results = append(results, wrongMatch{
 				start:  absOffset,
 				length: n,
-				name:   name,
+				name:   e.str,
 			})
 		}
 	}
@@ -123,19 +145,19 @@ type lineNode interface {
 }
 
 // scanLines scans all lines from a block node (FencedCodeBlock, CodeBlock,
-// HTMLBlock) and appends any wrong-cased matches to all.
-func (r *Rule) scanLines(n lineNode, f *lint.File) []wrongMatch {
+// HTMLBlock) and appends any wrong-cased matches to out.
+func scanLines(entries []nameEntry, n lineNode, f *lint.File) []wrongMatch {
 	segs := n.Lines()
 	var out []wrongMatch
 	for i := 0; i < segs.Len(); i++ {
 		seg := segs.At(i)
-		out = append(out, r.scanBytes(seg.Value(f.Source), seg.Start, f.Source)...)
+		out = append(out, scanBytes(entries, seg.Value(f.Source), seg.Start, f.Source)...)
 	}
 	return out
 }
 
 // scanCodeSpanChildren scans the Text children of a CodeSpan node.
-func (r *Rule) scanCodeSpanChildren(v *ast.CodeSpan, f *lint.File) []wrongMatch {
+func scanCodeSpanChildren(entries []nameEntry, v *ast.CodeSpan, f *lint.File) []wrongMatch {
 	var out []wrongMatch
 	for c := v.FirstChild(); c != nil; c = c.NextSibling() {
 		t, ok := c.(*ast.Text)
@@ -143,24 +165,26 @@ func (r *Rule) scanCodeSpanChildren(v *ast.CodeSpan, f *lint.File) []wrongMatch 
 			continue
 		}
 		seg := t.Segment
-		out = append(out, r.scanBytes(seg.Value(f.Source), seg.Start, f.Source)...)
+		out = append(out, scanBytes(entries, seg.Value(f.Source), seg.Start, f.Source)...)
 	}
 	return out
 }
 
 // scanRawHTMLSegments scans the Segments of a RawHTML node.
-func (r *Rule) scanRawHTMLSegments(v *ast.RawHTML, f *lint.File) []wrongMatch {
+func scanRawHTMLSegments(entries []nameEntry, v *ast.RawHTML, f *lint.File) []wrongMatch {
 	var out []wrongMatch
 	for i := 0; i < v.Segments.Len(); i++ {
 		seg := v.Segments.At(i)
-		out = append(out, r.scanBytes(seg.Value(f.Source), seg.Start, f.Source)...)
+		out = append(out, scanBytes(entries, seg.Value(f.Source), seg.Start, f.Source)...)
 	}
 	return out
 }
 
 // collectMatches walks the AST and gathers all wrong-cased matches.
+// nameEntry values are precomputed once here and reused across all segments.
 func (r *Rule) collectMatches(f *lint.File) []wrongMatch {
-	if len(r.Names) == 0 {
+	entries := r.buildNameEntries()
+	if len(entries) == 0 {
 		return nil
 	}
 	var all []wrongMatch
@@ -175,27 +199,27 @@ func (r *Rule) collectMatches(f *lint.File) []wrongMatch {
 			return ast.WalkSkipChildren, nil
 		case *ast.CodeSpan:
 			if r.CheckCode {
-				all = append(all, r.scanCodeSpanChildren(v, f)...)
+				all = append(all, scanCodeSpanChildren(entries, v, f)...)
 			}
 			return ast.WalkSkipChildren, nil
 		case *ast.FencedCodeBlock, *ast.CodeBlock:
 			if r.CheckCode {
-				all = append(all, r.scanLines(n, f)...)
+				all = append(all, scanLines(entries, n, f)...)
 			}
 			return ast.WalkSkipChildren, nil
 		case *ast.HTMLBlock:
 			if r.CheckHTML {
-				all = append(all, r.scanLines(n, f)...)
+				all = append(all, scanLines(entries, n, f)...)
 			}
 			return ast.WalkSkipChildren, nil
 		case *ast.RawHTML:
 			if r.CheckHTML {
-				all = append(all, r.scanRawHTMLSegments(v, f)...)
+				all = append(all, scanRawHTMLSegments(entries, v, f)...)
 			}
 			return ast.WalkSkipChildren, nil
 		case *ast.Text:
 			seg := v.Segment
-			all = append(all, r.scanBytes(seg.Value(f.Source), seg.Start, f.Source)...)
+			all = append(all, scanBytes(entries, seg.Value(f.Source), seg.Start, f.Source)...)
 		}
 
 		return ast.WalkContinue, nil
