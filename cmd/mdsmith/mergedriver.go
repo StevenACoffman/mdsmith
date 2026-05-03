@@ -83,11 +83,25 @@ func mergeFileMode(name string, defaultMode os.FileMode) os.FileMode {
 	return defaultMode
 }
 
-// guardRegularFile returns an error if path exists and is not a regular file
-// (e.g. a symlink or directory), preventing writes from following links
-// outside the worktree.
+// lstatFn is a variable so tests can substitute a failing implementation
+// to exercise non-ENOENT Lstat error paths in guardRegularFile.
+var lstatFn = os.Lstat
+
+// guardRegularFile returns an error if:
+//   - path exists and is not a regular file (symlink, directory, …), or
+//   - os.Lstat fails for any reason other than ENOENT.
+//
+// A missing file (ENOENT) is allowed; the caller decides whether that
+// is an error at a higher level.
 func guardRegularFile(path string) error {
-	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
+	info, err := lstatFn(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("%s: lstat: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%s: not a regular file", path)
 	}
 	return nil
@@ -100,6 +114,10 @@ var guardFn = guardRegularFile
 // osWriteFile is a variable so tests can substitute a failing implementation
 // to exercise error paths without needing OS tricks.
 var osWriteFile = os.WriteFile
+
+// readFileLimited is a variable so tests can substitute a failing
+// implementation to exercise the read-fixed-file error path in readAndRestore.
+var readFileLimited = lint.ReadFileLimited
 
 // mergeAndClean performs the 3-way merge and strips conflict markers.
 // Returns the cleaned content and an exit code (0 on success).
@@ -277,7 +295,7 @@ func fixAtRealPath(cleaned []byte, ours, pathname string, maxBytes int64) ([]byt
 // content (or removes it if it did not previously exist), and returns the fixed
 // bytes. A non-zero exit code means the caller should propagate the error.
 func readAndRestore(pathname string, backup []byte, backupErr error, mode os.FileMode, maxBytes int64) ([]byte, int) {
-	fixed, err := lint.ReadFileLimited(pathname, maxBytes)
+	fixed, err := readFileLimited(pathname, maxBytes)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mdsmith: reading fixed file: %v\n", err)
 		return nil, 2
@@ -292,6 +310,11 @@ func readAndRestore(pathname string, backup []byte, backupErr error, mode os.Fil
 		}
 		restoreErr = osWriteFile(pathname, backup, mode)
 	} else if os.IsNotExist(backupErr) {
+		// Re-check before removal to avoid removing a swapped-in directory.
+		if err := guardFn(pathname); err != nil {
+			fmt.Fprintf(os.Stderr, "mdsmith: %v\n", err)
+			return fixed, 2
+		}
 		restoreErr = os.Remove(pathname)
 	}
 	if restoreErr != nil {

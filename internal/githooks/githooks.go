@@ -19,13 +19,11 @@ import (
 	"github.com/jeduden/mdsmith/internal/rule"
 )
 
-// readFile and writeFile are variables so tests can substitute failing
-// implementations to exercise error paths in WriteGitattributes.
+// readFile, writeFile, and lstatFile are variables so tests can substitute
+// failing implementations to exercise error paths in WriteGitattributes.
 var readFile = os.ReadFile
-
-// writeFile is a variable so tests can substitute a failing implementation
-// to exercise the os.WriteFile error path in WriteGitattributes.
 var writeFile = os.WriteFile
+var lstatFile = os.Lstat
 
 // PreMergeCommitMarker is the comment line written into the
 // pre-merge-commit hook so that mdsmith (and the git-hook-sync rule)
@@ -710,10 +708,12 @@ func WriteGitattributes(path string, globs Globs) error {
 	// Reject symlinks and non-regular files before any I/O to reduce the
 	// risk of following a link to a path outside the repository.
 	// A narrow TOCTOU window remains between this check and the I/O calls.
-	if info, err := os.Lstat(path); err == nil {
+	if info, err := lstatFile(path); err == nil {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("writing %s: not a regular file", path)
 		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("writing %s: lstat: %w", path, err)
 	}
 
 	existing, err := readFile(path)
@@ -786,11 +786,13 @@ func writeGitattributesFile(path, content string) error {
 	// Default mode for new files; os.WriteFile preserves existing mode
 	// on truncating writes so no chmod is needed for existing files.
 	mode := os.FileMode(0o644)
-	if info, err := os.Lstat(path); err == nil {
+	if info, err := lstatFile(path); err == nil {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("writing %s: not a regular file", path)
 		}
 		mode = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("writing %s: lstat: %w", path, err)
 	}
 	if err := writeFile(path, []byte(content), mode); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)

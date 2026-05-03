@@ -922,6 +922,17 @@ func TestMergeFileMode_MissingFile_UsesDefault(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o644), got)
 }
 
+func TestGuardRegularFile_LstatNonENOENTError_ReturnsError(t *testing.T) {
+	orig := lstatFn
+	t.Cleanup(func() { lstatFn = orig })
+	lstatFn = func(string) (os.FileInfo, error) {
+		return nil, fmt.Errorf("mock lstat failure")
+	}
+	err := guardRegularFile("anypath")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lstat")
+}
+
 func TestMergeAndClean_ReGuardFails_ExitsTwo(t *testing.T) {
 	// The re-check of ours immediately before osWriteFile (4th guardFn call
 	// in mergeAndClean: ours/base/theirs at start, then ours again pre-write).
@@ -1177,6 +1188,113 @@ func TestFixAtRealPath_FifthGuardFails_ExitsTwo(t *testing.T) {
 		assert.Equal(t, 2, code)
 	})
 	assert.Contains(t, got, "injected pre-ours-write guard")
+}
+
+func TestFixAtRealPath_PathnameNotExist_RemovesAfterFix(t *testing.T) {
+	// When pathname doesn't exist before the merge, fixAtRealPath should
+	// remove the temp file it created rather than restoring non-existent content.
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+
+	pathname := filepath.Join(dir, "newfile.md")
+	ours := filepath.Join(dir, "ours.md")
+	// pathname does NOT exist — backup will be ENOENT.
+	require.NoError(t, os.WriteFile(ours, []byte("# Hello\n"), 0o644))
+
+	fixed, code := fixAtRealPath([]byte("# Hello\n"), ours, pathname, 1<<20)
+	assert.Equal(t, 0, code)
+	assert.NotEmpty(t, fixed)
+	// pathname should have been removed after the fix cycle.
+	_, statErr := os.Stat(pathname)
+	assert.True(t, os.IsNotExist(statErr), "pathname should be removed after fix")
+}
+
+func TestFixAtRealPath_GuardBeforeRemoveFails_ExitsTwo(t *testing.T) {
+	// 6th guardFn call = re-check of pathname before os.Remove in the
+	// ENOENT-backup branch of readAndRestore.
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+
+	pathname := filepath.Join(dir, "newfile.md")
+	ours := filepath.Join(dir, "ours.md")
+	require.NoError(t, os.WriteFile(ours, []byte("# Hello\n"), 0o644))
+
+	orig := guardFn
+	t.Cleanup(func() { guardFn = orig })
+	// Calls: 1=pathname top, 2=ours top, 3=pathname pre-write,
+	//        6=pathname pre-remove (4 & 5 are from fixAtRealPath ours re-check
+	//        and the re-check inside readAndRestore before restore — but since
+	//        backupErr is ENOENT the restore guard (call 4) isn't taken and we
+	//        go straight to the Remove guard).
+	guardFn = guardCallN(4, "injected pre-remove guard")
+
+	got := captureStderr(func() {
+		_, code := fixAtRealPath([]byte("# Hello\n"), ours, pathname, 1<<20)
+		assert.Equal(t, 2, code)
+	})
+	assert.Contains(t, got, "injected pre-remove guard")
+}
+
+func TestFixAtRealPath_ReadFixedFileFails_ExitsTwo(t *testing.T) {
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+
+	pathname := filepath.Join(dir, "PLAN.md")
+	ours := filepath.Join(dir, "ours.md")
+	require.NoError(t, os.WriteFile(pathname, []byte("# Hello\n"), 0o644))
+	require.NoError(t, os.WriteFile(ours, []byte("# Hello\n"), 0o644))
+
+	orig := readFileLimited
+	t.Cleanup(func() { readFileLimited = orig })
+	readFileLimited = func(string, int64) ([]byte, error) {
+		return nil, fmt.Errorf("mock read fixed failure")
+	}
+
+	got := captureStderr(func() {
+		_, code := fixAtRealPath([]byte("# Hello\n"), ours, pathname, 1<<20)
+		assert.Equal(t, 2, code)
+	})
+	assert.Contains(t, got, "reading fixed file")
+}
+
+func TestFixAtRealPath_RestoreWriteFails_ExitsTwo(t *testing.T) {
+	// Restore write (2nd osWriteFile call) fails.
+	dir := t.TempDir()
+	origWd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+
+	pathname := filepath.Join(dir, "PLAN.md")
+	ours := filepath.Join(dir, "ours.md")
+	require.NoError(t, os.WriteFile(pathname, []byte("# Hello\n"), 0o644))
+	require.NoError(t, os.WriteFile(ours, []byte("# Hello\n"), 0o644))
+
+	var writeCount int
+	orig := osWriteFile
+	t.Cleanup(func() { osWriteFile = orig })
+	osWriteFile = func(name string, data []byte, perm os.FileMode) error {
+		writeCount++
+		if writeCount == 2 { // second write = restore
+			return fmt.Errorf("mock restore failure")
+		}
+		return orig(name, data, perm)
+	}
+
+	got := captureStderr(func() {
+		_, code := fixAtRealPath([]byte("# Hello\n"), ours, pathname, 1<<20)
+		assert.Equal(t, 2, code)
+	})
+	assert.Contains(t, got, "restoring")
 }
 
 func TestFixAtRealPath_PreservesOursFileMode(t *testing.T) {

@@ -1118,6 +1118,28 @@ func TestWriteGitattributes_WriteFileFails_ReturnsError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestWriteGitattributes_LstatNonENOENTError_ReturnsError(t *testing.T) {
+	orig := lstatFile
+	t.Cleanup(func() { lstatFile = orig })
+	lstatFile = func(string) (os.FileInfo, error) {
+		return nil, fmt.Errorf("mock lstat failure")
+	}
+	err := WriteGitattributes("/any/path", Globs{Include: []string{"*.md"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lstat")
+}
+
+func TestWriteGitattributesFile_LstatNonENOENTError_ReturnsError(t *testing.T) {
+	orig := lstatFile
+	t.Cleanup(func() { lstatFile = orig })
+	lstatFile = func(string) (os.FileInfo, error) {
+		return nil, fmt.Errorf("mock lstat failure")
+	}
+	err := writeGitattributesFile("/any/path", "content")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lstat")
+}
+
 func TestWriteGitattributes_ReadFileFails_ReturnsWrappedError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".gitattributes")
