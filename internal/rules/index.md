@@ -68,5 +68,6 @@ row: "| [{id}]({filename}) | `{name}` | {status} | {description} |"
 | [MDS047](MDS047-ambiguous-emphasis/README.md)                 | `ambiguous-emphasis`                 | ready     | Forbid emphasis sequences whose meaning a human cannot predict at a glance.                                             |
 | [MDS048](MDS048-git-hook-sync/README.md)                      | `git-hook-sync`                      | ready     | Git artifacts must match the canonical glob-based template derived from .mdsmith.yml.                                   |
 | [MDS049](MDS049-no-space-in-link-text/README.md)              | `no-space-in-link-text`              | ready     | Link text and image alt text must not have leading or trailing whitespace inside the brackets.                          |
+| [MDS050](MDS050-proper-names/README.md)                       | `proper-names`                       | ready     | Configured proper names (e.g. JavaScript, GitHub) must appear with their canonical casing.                              |
 | [MDS051](MDS051-single-h1/README.md)                          | `single-h1`                          | ready     | At most one H1 heading is allowed per file.                                                                             |
 <?/catalog?>
