@@ -253,9 +253,9 @@ Weaknesses:
 | Space in links      | [MDS049][mds049]               | [MD039][md039]                           | no                                                |
 | Proper names        | [MDS050][mds050]               | [MD044][md044]                           | no                                                |
 | Required headings   | [MDS020][mds020] (via schema)  | [MD043][md043]                           | no                                                |
-| Single H1           | [MDS051][mds051]               | [MD047][md047]                           | no                                                |
+| Single H1           | [MDS051][mds051]               | [MD025][md025]                           | no                                                |
 | Link fragments      | [MDS027][mds027] (cross-file)  | [MD051][md051]                           | no                                                |
-| Forbid ref-style    | planned ([plan 107][plan107])  | no                                       | no                                                |
+| Forbid ref-style    | [MDS043][mds043]               | no                                       | no                                                |
 | Undefined ref label | planned ([plan 128][plan128])  | [MD052][md052]                           | no                                                |
 | Unused/dup ref def  | [MDS053][mds053]               | [MD053][md053]                           | no                                                |
 
@@ -265,15 +265,15 @@ the broadest rule set. Plans cover inline HTML
 ([plan 109][plan109]), emphasis style
 ([plan 106][plan106]), and HR style
 ([plan 108][plan108]). More plans cover ambiguous emphasis
-([plan 111][plan111]), reference-style links
-([plan 107][plan107]), and undefined reference labels
+([plan 111][plan111]) and undefined reference labels
 ([plan 128][plan128]).
 Image alt text ([MDS032][mds032]), OL numbering
 ([MDS046][mds046]), no-space-in-code-spans
 ([MDS052][mds052], [plan 124][plan124]),
 no-space-in-link-text ([MDS049][mds049]),
 proper names ([MDS050][mds050]), single H1
-([MDS051][mds051]), and unused link reference
+([MDS051][mds051]), no-reference-style
+([MDS043][mds043]), and unused link reference
 definitions ([MDS053][mds053]) are already
 implemented.
 
@@ -598,7 +598,6 @@ items most relevant to this comparison are:
 - **Closing rule gaps with markdownlint** — plans
   [105][plan105] (no-inline-html / MD033),
   [106][plan106] (emphasis style / MD049, MD050),
-  [107][plan107] (no reference-style links),
   [108][plan108] (horizontal rule style / MD035),
   [109][plan109] (list marker style / MD004), and
   [111][plan111] (ambiguous emphasis / MD037).
@@ -640,6 +639,7 @@ you need a stable rule set while these land.
 [mds029]: ../../internal/rules/MDS029-conciseness-scoring/README.md
 [mds030]: ../../internal/rules/MDS030-empty-section-body/README.md
 [mds032]: ../../internal/rules/MDS032-no-empty-alt-text/README.md
+[mds043]: ../../internal/rules/MDS043-no-reference-style/README.md
 [mds035]: ../../internal/rules/MDS035-toc-directive/README.md
 [mds038]: ../../internal/rules/MDS038-toc/README.md
 [mds046]: ../../internal/rules/MDS046-ordered-list-numbering/README.md
@@ -675,7 +675,6 @@ you need a stable rule set while these land.
 [md043]: https://github.com/DavidAnson/markdownlint/blob/main/doc/md043.md
 [md044]: https://github.com/DavidAnson/markdownlint/blob/main/doc/md044.md
 [md045]: https://github.com/DavidAnson/markdownlint/blob/main/doc/md045.md
-[md047]: https://github.com/DavidAnson/markdownlint/blob/main/doc/md047.md
 [md048]: https://github.com/DavidAnson/markdownlint/blob/main/doc/md048.md
 [md049]: https://github.com/DavidAnson/markdownlint/blob/main/doc/md049.md
 [md050]: https://github.com/DavidAnson/markdownlint/blob/main/doc/md050.md
@@ -753,7 +752,6 @@ you need a stable rule set while these land.
 [plan104]: ../../plan/104_build-lifecycle-hooks.md
 [plan105]: ../../plan/105_no-inline-html.md
 [plan106]: ../../plan/106_emphasis-style.md
-[plan107]: ../../plan/107_no-reference-style.md
 [plan108]: ../../plan/108_horizontal-rule-style.md
 [plan109]: ../../plan/109_list-marker-style.md
 [plan111]: ../../plan/111_ambiguous-emphasis.md
