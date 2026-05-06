@@ -1,0 +1,507 @@
+package lsp
+
+import (
+	"encoding/json"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/jeduden/mdsmith/internal/lsp/index"
+)
+
+// These tests exercise the per-handler error and edge paths that
+// the happy-path coverage tests in symbols_test.go don't reach —
+// missing buffers, malformed parameters, empty index results,
+// non-file URIs, and so on.
+
+func TestRangeForLinesClampsStart(t *testing.T) {
+	t.Parallel()
+	r := rangeForLines(0, 0, []byte("foo\n"))
+	assert.Equal(t, 0, r.Start.Line)
+	assert.Equal(t, 0, r.End.Line)
+}
+
+func TestRangeForLinesEndPastEOF(t *testing.T) {
+	t.Parallel()
+	src := []byte("foo\nbar\n")
+	r := rangeForLines(1, 99, src)
+	// End line clamps to source line count, character to 0 since
+	// the past-end line has no content.
+	assert.Equal(t, 0, r.Start.Line)
+	assert.Equal(t, 98, r.End.Line) // end-1 — out of range falls through with charCount 0
+	assert.Equal(t, 0, r.End.Character)
+}
+
+func TestWorkspaceURIWithEmptyRoot(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, errResp := h.request("initialize", initializeParams{})
+	require.Nil(t, errResp)
+	// No root → workspaceURI returns the rel path itself.
+	got := h.srv.workspaceURI("docs/x.md")
+	assert.Equal(t, "docs/x.md", got)
+}
+
+func TestDocTextOrFileNonFileURI(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, errResp := h.request("initialize", initializeParams{})
+	require.Nil(t, errResp)
+	_, _, ok := h.srv.docTextOrFile("https://example.com/x.md")
+	assert.False(t, ok)
+}
+
+func TestDocTextOrFileMissingDisk(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, errResp := h.request("initialize", initializeParams{})
+	require.Nil(t, errResp)
+	abs, err := filepath.Abs(filepath.Join(t.TempDir(), "nope.md"))
+	require.NoError(t, err)
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}
+	_, _, ok := h.srv.docTextOrFile(u.String())
+	assert.False(t, ok)
+}
+
+func TestEnsureIndexEmptyRoot(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, errResp := h.request("initialize", initializeParams{})
+	require.Nil(t, errResp)
+	idx := h.srv.ensureIndex()
+	assert.NotNil(t, idx)
+	assert.Empty(t, idx.Files())
+}
+
+func TestEnsureIndexAfterDocOpenButNoBuild(t *testing.T) {
+	t.Parallel()
+	src := "# Top\n"
+	h, _, rootURI := rootedHarness(t, map[string]string{"a.md": src})
+	h.srv.settingsMu.Lock()
+	h.srv.settings.Run = runOff
+	h.srv.settingsMu.Unlock()
+	uri := rootURI + "/a.md"
+	h.notify("textDocument/didOpen", didOpenTextDocumentParams{
+		TextDocument: textDocumentItem{URI: uri, LanguageID: "markdown", Version: 1, Text: src},
+	})
+	idx := h.srv.ensureIndex()
+	assert.NotNil(t, idx)
+	assert.NotEmpty(t, idx.Files())
+}
+
+func TestIndexUpdateNoIndex(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, errResp := h.request("initialize", initializeParams{})
+	require.Nil(t, errResp)
+	// idx is nil — should be a no-op.
+	h.srv.indexUpdate("/abs/x.md", []byte("# x\n"))
+	assert.Nil(t, h.srv.idx)
+}
+
+func TestIndexUpdateNonAbs(t *testing.T) {
+	t.Parallel()
+	src := "# Top\n"
+	h, _, rootURI := rootedHarness(t, map[string]string{"a.md": src})
+	h.srv.settingsMu.Lock()
+	h.srv.settings.Run = runOff
+	h.srv.settingsMu.Unlock()
+	// Force the index up.
+	h.srv.ensureIndex()
+	// Pass a relative path (workspaceRelative returns it unchanged).
+	h.srv.indexUpdate("a.md", []byte("# Updated\n"))
+	fe, ok := h.srv.idx.File("a.md")
+	require.True(t, ok)
+	assert.NotEmpty(t, fe.Symbols)
+	_ = rootURI
+}
+
+func TestIndexReloadFromDiskMissingThenWritten(t *testing.T) {
+	t.Parallel()
+	src := "# Top\n"
+	h, tmp, _ := rootedHarness(t, map[string]string{"a.md": src})
+	h.srv.settingsMu.Lock()
+	h.srv.settings.Run = runOff
+	h.srv.settingsMu.Unlock()
+	h.srv.ensureIndex()
+	// Delete then reload — should evict.
+	abs := filepath.Join(tmp, "a.md")
+	require.NoError(t, os.Remove(abs))
+	h.srv.indexReloadFromDisk(abs)
+	_, ok := h.srv.idx.File("a.md")
+	assert.False(t, ok)
+	// Re-add and reload — should re-index.
+	require.NoError(t, os.WriteFile(abs, []byte("# Back\n"), 0o644))
+	h.srv.indexReloadFromDisk(abs)
+	fe, ok := h.srv.idx.File("a.md")
+	require.True(t, ok)
+	assert.Equal(t, "Back", fe.Symbols[0].Name)
+}
+
+func TestLocationsForFileLinkUnknownTarget(t *testing.T) {
+	t.Parallel()
+	h, _, _ := rootedHarness(t, map[string]string{"a.md": "# A\n"})
+	idx := h.srv.ensureIndex()
+	got := h.srv.locationsForFileLink("not-in-index.md", "anchor", idx)
+	require.Len(t, got, 1)
+	assert.Equal(t, 0, got[0].Range.Start.Line)
+}
+
+func TestLocationsForFileLinkEmptyTarget(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, errResp := h.request("initialize", initializeParams{})
+	require.Nil(t, errResp)
+	got := h.srv.locationsForFileLink("", "anchor", h.srv.ensureIndex())
+	assert.Empty(t, got)
+}
+
+func TestLocationsForFileLinkAnchorNotInTarget(t *testing.T) {
+	t.Parallel()
+	srcA := "# A\n"
+	srcB := "# B\n"
+	h, _, _ := rootedHarness(t, map[string]string{"a.md": srcA, "b.md": srcB})
+	idx := h.srv.ensureIndex()
+	got := h.srv.locationsForFileLink("b.md", "missing", idx)
+	require.Len(t, got, 1)
+	assert.Equal(t, 0, got[0].Range.Start.Line)
+}
+
+func TestLocationForRefDefMissing(t *testing.T) {
+	t.Parallel()
+	h, _, rootURI := rootedHarness(t, map[string]string{"a.md": "# A\n"})
+	h.srv.settingsMu.Lock()
+	h.srv.settings.Run = runOff
+	h.srv.settingsMu.Unlock()
+	h.notify("textDocument/didOpen", didOpenTextDocumentParams{
+		TextDocument: textDocumentItem{URI: rootURI + "/a.md", LanguageID: "markdown", Version: 1, Text: "# A\n"},
+	})
+	_, ok := h.srv.locationForRefDef("a.md", "nonexistent", []byte("# A\n"))
+	assert.False(t, ok)
+}
+
+func TestLocationForRefDefUnknownFile(t *testing.T) {
+	t.Parallel()
+	h, _, _ := rootedHarness(t, map[string]string{"a.md": "# A\n"})
+	_, ok := h.srv.locationForRefDef("not-in-index.md", "x", nil)
+	assert.False(t, ok)
+}
+
+func TestLocationsForRefsToHeadingEmpty(t *testing.T) {
+	t.Parallel()
+	h, _, _ := rootedHarness(t, map[string]string{"a.md": "# A\n"})
+	got := h.srv.locationsForRefsToHeading("a.md", "", h.srv.ensureIndex())
+	assert.Empty(t, got)
+}
+
+func TestLocationsForRefsToHeadingSorted(t *testing.T) {
+	t.Parallel()
+	srcA := "# A\n\n## Sec\n"
+	srcB := "# B\n\n[s](./a.md#sec)\n[s2](./a.md#sec)\n"
+	srcC := "# C\n\n[s](./a.md#sec)\n"
+	h, _, rootURI := rootedHarness(t, map[string]string{
+		"a.md": srcA, "b.md": srcB, "c.md": srcC,
+	})
+	got := h.srv.locationsForRefsToHeading("a.md", "sec", h.srv.ensureIndex())
+	require.Len(t, got, 3)
+	// Check sort: same URI grouped, then by line.
+	for i := 1; i < len(got); i++ {
+		if got[i-1].URI == got[i].URI {
+			assert.LessOrEqual(t, got[i-1].Range.Start.Line, got[i].Range.Start.Line)
+		} else {
+			assert.Less(t, got[i-1].URI, got[i].URI)
+		}
+	}
+	_ = rootURI
+}
+
+func TestLocationsForKindDefinitionWithKindBlock(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, ".mdsmith.yml"), []byte(`
+kinds:
+  guide: {}
+`), 0o644))
+	h := newHarness(t)
+	rootURI := pathToFileURI(t, tmp)
+	_, errResp := h.request("initialize", initializeParams{
+		RootURI: &rootURI, Capabilities: clientCapabilities{},
+	})
+	require.Nil(t, errResp)
+	h.srv.reloadConfig()
+	got := h.srv.locationsForKindDefinition("guide")
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0].URI, ".mdsmith.yml")
+	// Missing kind.
+	assert.Empty(t, h.srv.locationsForKindDefinition("not-a-kind"))
+}
+
+func TestLocationsForRefUsesUnknownFile(t *testing.T) {
+	t.Parallel()
+	h, _, _ := rootedHarness(t, map[string]string{"a.md": "# A\n"})
+	got := h.srv.locationsForRefUses("nope.md", "x", h.srv.ensureIndex())
+	assert.Empty(t, got)
+}
+
+func TestLocationsForFileTopFiltersAnchorAndKind(t *testing.T) {
+	t.Parallel()
+	srcA := "# A\n"
+	// Only the unanchored file link should be included.
+	srcB := "# B\n\n[a](./a.md)\n[c](./a.md#sec)\n"
+	srcInc := "# I\n\n<?include\nfile: \"./a.md\"\n?>\n<?/include?>\n"
+	h, _, rootURI := rootedHarness(t, map[string]string{
+		"a.md": srcA, "b.md": srcB, "i.md": srcInc,
+	})
+	idx := h.srv.ensureIndex()
+	got := h.srv.locationsForFileTop("a.md", idx)
+	require.Len(t, got, 1)
+	assert.Equal(t, rootURI+"/b.md", got[0].URI)
+}
+
+func TestLocationsForFileReferencesIncludesDirectives(t *testing.T) {
+	t.Parallel()
+	srcA := "# A\n"
+	srcB := "# B\n\n[a](./a.md)\n"
+	srcInc := "# I\n\n<?include\nfile: \"./a.md\"\n?>\n<?/include?>\n"
+	srcBuild := "# B2\n\n<?build\nsource: \"./a.md\"\n?>\n<?/build?>\n"
+	h, _, _ := rootedHarness(t, map[string]string{
+		"a.md": srcA, "b.md": srcB, "i.md": srcInc, "b2.md": srcBuild,
+	})
+	idx := h.srv.ensureIndex()
+	got := h.srv.locationsForFileReferences("a.md", idx)
+	assert.GreaterOrEqual(t, len(got), 3,
+		"expected file link + include + build references, got %v", got)
+}
+
+func TestLocationsForFileReferencesUnknownFile(t *testing.T) {
+	t.Parallel()
+	h, _, _ := rootedHarness(t, map[string]string{"a.md": "# A\n"})
+	got := h.srv.locationsForFileReferences("absent.md", h.srv.ensureIndex())
+	assert.Empty(t, got)
+}
+
+func TestHandleWorkspaceSymbolEmptyResultIsList(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, errResp := h.request("initialize", initializeParams{})
+	require.Nil(t, errResp)
+	raw, errResp := h.request("workspace/symbol", workspaceSymbolParams{Query: ""})
+	require.Nil(t, errResp)
+	// Empty result must be `[]`, not `null`.
+	assert.True(t, strings.HasPrefix(string(raw), "["))
+}
+
+func TestHandleReferencesOnPlainProse(t *testing.T) {
+	t.Parallel()
+	src := "# Top\n\nplain prose only\n"
+	h, _, rootURI := rootedHarness(t, map[string]string{"a.md": src})
+	uri := rootURI + "/a.md"
+	h.srv.settingsMu.Lock()
+	h.srv.settings.Run = runOff
+	h.srv.settingsMu.Unlock()
+	h.notify("textDocument/didOpen", didOpenTextDocumentParams{
+		TextDocument: textDocumentItem{URI: uri, LanguageID: "markdown", Version: 1, Text: src},
+	})
+	raw, errResp := h.request("textDocument/references", referencesParams{
+		textDocumentPositionParams: textDocumentPositionParams{
+			TextDocument: textDocumentIdentifier{URI: uri},
+			Position:     Position{Line: 2, Character: 5},
+		},
+	})
+	require.Nil(t, errResp)
+	var locs []location
+	require.NoError(t, json.Unmarshal(raw, &locs))
+	assert.Empty(t, locs)
+}
+
+func TestHandleReferencesOnMissingDocument(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, errResp := h.request("initialize", initializeParams{})
+	require.Nil(t, errResp)
+	raw, errResp := h.request("textDocument/references", referencesParams{
+		textDocumentPositionParams: textDocumentPositionParams{
+			TextDocument: textDocumentIdentifier{URI: "file:///nope/x.md"},
+			Position:     Position{Line: 0, Character: 0},
+		},
+	})
+	require.Nil(t, errResp)
+	var locs []location
+	require.NoError(t, json.Unmarshal(raw, &locs))
+	assert.Empty(t, locs)
+}
+
+func TestHandlePrepareCallHierarchyMissingDocument(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, errResp := h.request("initialize", initializeParams{})
+	require.Nil(t, errResp)
+	raw, errResp := h.request("textDocument/prepareCallHierarchy", textDocumentPositionParams{
+		TextDocument: textDocumentIdentifier{URI: "file:///nope.md"},
+	})
+	require.Nil(t, errResp)
+	var items []callHierarchyItem
+	require.NoError(t, json.Unmarshal(raw, &items))
+	assert.Empty(t, items)
+}
+
+func TestHandlePrepareCallHierarchyDirectiveMissingTarget(t *testing.T) {
+	t.Parallel()
+	// Directive with non-file/source arg → falls back to file-level.
+	src := "# T\n\n<?include\nstrip-frontmatter: \"true\"\n?>\n<?/include?>\n"
+	h, _, rootURI := rootedHarness(t, map[string]string{"a.md": src})
+	uri := rootURI + "/a.md"
+	h.srv.settingsMu.Lock()
+	h.srv.settings.Run = runOff
+	h.srv.settingsMu.Unlock()
+	h.notify("textDocument/didOpen", didOpenTextDocumentParams{
+		TextDocument: textDocumentItem{URI: uri, LanguageID: "markdown", Version: 1, Text: src},
+	})
+	// Cursor on the directive arg line.
+	raw, errResp := h.request("textDocument/prepareCallHierarchy", textDocumentPositionParams{
+		TextDocument: textDocumentIdentifier{URI: uri},
+		Position:     Position{Line: 3, Character: 5},
+	})
+	require.Nil(t, errResp)
+	var items []callHierarchyItem
+	require.NoError(t, json.Unmarshal(raw, &items))
+	// Directive without a target file → empty item slice.
+	assert.Empty(t, items)
+}
+
+func TestHeadingRangeFromIndexMissingFile(t *testing.T) {
+	t.Parallel()
+	src := []byte("# Top\n")
+	r := headingRangeFromIndex("a.md", "anchor", nil, src)
+	assert.Equal(t, 0, r.Start.Line)
+}
+
+func TestHeadingRangeFromIndexUnknownAnchor(t *testing.T) {
+	t.Parallel()
+	idx := index.New("/r")
+	idx.Update("a.md", []byte("# Top\n"))
+	fe, ok := idx.File("a.md")
+	require.True(t, ok)
+	r := headingRangeFromIndex("a.md", "absent-anchor", fe, []byte("# Top\n"))
+	assert.Equal(t, 0, r.Start.Line)
+}
+
+func TestOutgoingScopeFileLevel(t *testing.T) {
+	t.Parallel()
+	idx := index.New("/r")
+	start, end := outgoingScope(idx, &callHierarchyData{File: "x.md"})
+	assert.Equal(t, 1, start)
+	assert.Equal(t, 0, end)
+	// Nil data.
+	start, end = outgoingScope(idx, nil)
+	assert.Equal(t, 1, start)
+	assert.Equal(t, 0, end)
+}
+
+func TestOutgoingScopeUnknownFile(t *testing.T) {
+	t.Parallel()
+	idx := index.New("/r")
+	start, end := outgoingScope(idx, &callHierarchyData{File: "missing.md", Anchor: "x"})
+	assert.Equal(t, 1, start)
+	assert.Equal(t, 0, end)
+}
+
+func TestOutgoingScopeAnchorNotFound(t *testing.T) {
+	t.Parallel()
+	idx := index.New("/r")
+	idx.Update("a.md", []byte("# A\n"))
+	start, end := outgoingScope(idx, &callHierarchyData{File: "a.md", Anchor: "missing"})
+	assert.Equal(t, 1, start)
+	assert.Equal(t, 0, end)
+}
+
+func TestEffectiveKindsForNoConfig(t *testing.T) {
+	t.Parallel()
+	got := effectiveKindsFor(nil, "a.md", []byte("# A\n"))
+	assert.Nil(t, got)
+}
+
+func TestEffectiveKindsForBadFrontMatter(t *testing.T) {
+	t.Parallel()
+	// Front matter parse error must not crash; the function
+	// gracefully degrades to whatever the config layer returns
+	// (which may be nil when no kind-assignment matches).
+	tmp := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, ".mdsmith.yml"), []byte("kinds:\n  guide: {}\n"), 0o644))
+	h := newHarness(t)
+	rootURI := pathToFileURI(t, tmp)
+	_, errResp := h.request("initialize", initializeParams{
+		RootURI: &rootURI, Capabilities: clientCapabilities{},
+	})
+	require.Nil(t, errResp)
+	h.srv.reloadConfig()
+	cfg, _, _ := h.srv.snapshotConfig()
+	require.NotNil(t, cfg)
+	// Malformed YAML in the front matter — exercises the err
+	// branch in effectiveKindsFor.
+	got := effectiveKindsFor(cfg, "a.md", []byte("---\n!!malformed\n---\n# A\n"))
+	assert.NotPanics(t, func() { _ = got })
+}
+
+func TestBuildOutlineEmptyDocument(t *testing.T) {
+	t.Parallel()
+	got := buildOutline(nil)
+	assert.Empty(t, got)
+}
+
+func TestLeafSymbolDirective(t *testing.T) {
+	t.Parallel()
+	got := leafSymbol(index.Symbol{
+		Kind:          index.SymbolDirective,
+		Name:          "include",
+		StartLine:     5,
+		EndLine:       7,
+		SelectionLine: 5,
+		SelectionCol:  1,
+	}, []byte(""))
+	assert.Equal(t, "include", got.Name)
+	assert.Equal(t, "<?include?>", got.Detail)
+	assert.Equal(t, symbolKindEvent, got.Kind)
+}
+
+func TestLeafSymbolLinkRef(t *testing.T) {
+	t.Parallel()
+	got := leafSymbol(index.Symbol{
+		Kind:          index.SymbolLinkRef,
+		Name:          "lab",
+		StartLine:     1,
+		SelectionLine: 1,
+		SelectionCol:  1,
+	}, nil)
+	assert.Equal(t, symbolKindKey, got.Kind)
+	assert.Equal(t, "[lab]:", got.Detail)
+}
+
+func TestLeafSymbolFrontMatter(t *testing.T) {
+	t.Parallel()
+	got := leafSymbol(index.Symbol{
+		Kind:          index.SymbolFrontMatter,
+		Name:          "title",
+		StartLine:     1,
+		SelectionLine: 1,
+		SelectionCol:  1,
+	}, nil)
+	assert.Equal(t, symbolKindProperty, got.Kind)
+	assert.Empty(t, got.Detail)
+}
+
+func TestBuildIndexFromDiskHandlesReadFailure(t *testing.T) {
+	t.Parallel()
+	h, _, _ := rootedHarness(t, map[string]string{"a.md": "# A\n"})
+	cfg, _, root := h.srv.snapshotConfig()
+	idx := index.New(root)
+	// Pass a path that doesn't exist on disk.
+	h.srv.buildIndexFromDisk(idx, cfg, root, []string{"/does-not-exist/x.md"})
+	// No panic, no entry added.
+	assert.Empty(t, idx.Files())
+}

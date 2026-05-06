@@ -248,17 +248,21 @@ func frontMatterSymbols(filePath string, fm []byte) []Symbol {
 	return out
 }
 
-// stripDelimiters removes the leading and trailing "---\n" lines from
-// a front-matter prefix as returned by lint.StripFrontMatter.
+// stripDelimiters removes the leading and trailing `---\n` lines
+// from a front-matter prefix as returned by lint.StripFrontMatter.
+// The trailing strip uses TrimSuffix with the exact `---\n`
+// pattern (or `---` without a trailing newline as a fallback for
+// truncated input) rather than scanning for the last occurrence
+// of `---`. The previous LastIndex approach could match `---`
+// inside YAML content (e.g. inside a multi-line quoted string),
+// which would over-truncate the front matter.
 func stripDelimiters(fm []byte) []byte {
 	body := fm
-	if bytes.HasPrefix(body, []byte("---\n")) {
-		body = body[4:]
+	body = bytes.TrimPrefix(body, []byte("---\n"))
+	if t := bytes.TrimSuffix(body, []byte("---\n")); len(t) != len(body) {
+		return t
 	}
-	if i := bytes.LastIndex(body, []byte("---")); i >= 0 {
-		body = body[:i]
-	}
-	return body
+	return bytes.TrimSuffix(body, []byte("---"))
 }
 
 // frontMatterScalar returns a top-level scalar key from front matter

@@ -562,7 +562,7 @@ func (s *Server) resolveTargets(p textDocumentPositionParams, wantAll bool) []lo
 
 	switch res.Tag {
 	case index.TokenAnchorLink:
-		return s.locationsForAnchor(rel, res.TargetAnchor, wantAll, idx, source)
+		return s.locationsForAnchor(rel, res.TargetAnchor, idx, source)
 	case index.TokenFileLink:
 		return s.locationsForFileLink(res.TargetFile, res.TargetAnchor, idx)
 	case index.TokenRefUse:
@@ -616,10 +616,12 @@ func (s *Server) resolveTargets(p textDocumentPositionParams, wantAll bool) []lo
 	return nil
 }
 
-// locationsForAnchor returns the heading-or-link target for an
-// in-file anchor reference. wantAll widens to all heading occurrences
-// + their links across the workspace.
-func (s *Server) locationsForAnchor(rel, anchor string, wantAll bool, idx *index.Index, source []byte) []location {
+// locationsForAnchor returns the in-file heading targeted by an
+// anchor reference. It always returns at most one location — the
+// matching heading itself; multi-target widening for headings (the
+// implementation behavior) lives in resolveTargets' TokenHeading
+// arm, where the declaration is paired with all incoming links.
+func (s *Server) locationsForAnchor(rel, anchor string, idx *index.Index, source []byte) []location {
 	if anchor == "" {
 		return nil
 	}
@@ -1047,6 +1049,18 @@ func (s *Server) handleIncomingCalls(msg *requestMessage) {
 	order := make([]string, 0, len(edges))
 	groups := make(map[string]*bucket, len(edges))
 	for _, e := range edges {
+		// Call hierarchy is a cross-file dependency view: keep only
+		// the edge kinds that represent inter-document flow. Anchor
+		// and reference-style links are intra-document, and an
+		// edge whose SourceFile equals the item's File is a
+		// self-reference (e.g. `[a](#sec)` to a heading whose
+		// anchor matches `Anchor`); both would clutter the result.
+		if e.Kind == index.EdgeAnchorLink || e.Kind == index.EdgeRefLink {
+			continue
+		}
+		if e.SourceFile == p.Item.Data.File {
+			continue
+		}
 		r := rangeAt(e.SourceLine, e.SourceCol, nil)
 		if g, ok := groups[e.SourceFile]; ok {
 			g.ranges = append(g.ranges, r)

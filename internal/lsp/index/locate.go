@@ -2,6 +2,7 @@ package index
 
 import (
 	"bytes"
+	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
@@ -176,7 +177,7 @@ func headingInfo(target *ast.Heading, source []byte, root ast.Node) (string, int
 			c := slugCounts[slug]
 			for {
 				c++
-				a = sprintfDash(slug, c)
+				a = fmt.Sprintf("%s-%d", slug, c)
 				if !usedAnchors[a] {
 					break
 				}
@@ -193,38 +194,6 @@ func headingInfo(target *ast.Heading, source []byte, root ast.Node) (string, int
 	})
 	name := mdtext.ExtractPlainText(target, source)
 	return anchor, target.Level, name
-}
-
-func sprintfDash(slug string, c int) string {
-	// avoid pulling fmt for one call
-	var b strings.Builder
-	b.WriteString(slug)
-	b.WriteByte('-')
-	b.WriteString(itoa(c))
-	return b.String()
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := false
-	if n < 0 {
-		neg = true
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }
 
 // locateInAST walks AST nodes whose source range covers the cursor.
@@ -312,58 +281,52 @@ func linkContainsOffset(source []byte, l *ast.Link, off int) bool {
 	return false
 }
 
-// linkCloseOffset returns the byte offset of the matching closing
-// delimiter for a link whose display text ends at `after`. Goldmark
-// emits both shapes:
+// linkCloseOffset returns the byte offset of the closing delimiter
+// for a link whose display text ends at `after` (the byte offset
+// just past the last text character — i.e., on the closing `]` of
+// the text portion). Goldmark emits four link shapes:
 //
-//   - `[text](dest)` — inline. After the `]` comes a `(`, then the
-//     destination, then the closing `)`. The cursor-in-link range
-//     extends through the `)`.
-//   - `[text][label]`, `[label]`, `[text][]` — reference-style.
-//     The closing delimiter is `]`.
+//   - `[text](dest)` — inline. The cursor-in-link range extends
+//     through the matching `)` (parens may nest, e.g. URL
+//     parameters with parens inside).
+//   - `[text][label]` — full reference. Range extends through the
+//     second `]`.
+//   - `[text][]` — collapsed reference. Range extends through the
+//     second `]` (which is one byte after the empty `[]`).
+//   - `[label]` — shortcut reference. Range extends through the
+//     single `]` at `after`.
 //
-// Reference-style is detected via the AST node's `Reference` field;
-// inline detection scans for the `(` that immediately follows the
-// display-text close. Stops at newline so multi-line content past
-// the link can't be misattributed back to it.
+// Reference shape is detected via `l.Reference.Type`; inline shape
+// is detected by the `(` that follows the text-closing `]`. Stops
+// at newline so multi-line prose past the link can't be
+// misattributed back to it.
 func linkCloseOffset(source []byte, l *ast.Link, after int) int {
 	if l != nil && l.Reference != nil {
-		// `[text][label]` — close at the second `]`. There may be
-		// a `[` right after `after`; scan past both.
-		seenOpen := false
-		for i := after; i < len(source); i++ {
-			switch source[i] {
-			case '[':
-				seenOpen = true
-			case ']':
-				if seenOpen || i > after {
-					return i
-				}
-				return i
-			case '\n':
+		switch l.Reference.Type {
+		case ast.ReferenceLinkShortcut:
+			// `[label]` — close at the `]` at or after `after`.
+			return scanForByte(source, after, ']')
+		default:
+			// Full / collapsed: skip the text-closing `]`, then
+			// the opening `[` of the label/empty-pair, then close
+			// at the next `]`.
+			i := scanForByte(source, after, ']')
+			if i < 0 {
 				return -1
 			}
+			i = scanForByte(source, i+1, ']')
+			return i
 		}
-		return -1
 	}
 	// Inline `[text](dest)`: skip past the `]` to find `(`, then
-	// match the closing `)`. The `]` can be at `after-1` already
-	// since the text segment ends just before it.
+	// match the closing `)` while accounting for nested parens.
 	i := after
 	for i < len(source) && source[i] == ']' {
 		i++
 	}
 	if i >= len(source) || source[i] != '(' {
 		// Not an inline link shape; treat the next `]` as close.
-		for j := after; j < len(source); j++ {
-			switch source[j] {
-			case ']':
-				return j
-			case '\n':
-				return -1
-			}
-		}
-		return -1
+		return scanForByte(source, after, ']')
 	}
 	depth := 0
 	for ; i < len(source); i++ {
@@ -375,6 +338,20 @@ func linkCloseOffset(source []byte, l *ast.Link, after int) int {
 			if depth == 0 {
 				return i
 			}
+		case '\n':
+			return -1
+		}
+	}
+	return -1
+}
+
+// scanForByte returns the offset of the next `target` byte at or
+// after `from`, or -1 when a newline is hit first.
+func scanForByte(source []byte, from int, target byte) int {
+	for i := from; i < len(source); i++ {
+		switch source[i] {
+		case target:
+			return i
 		case '\n':
 			return -1
 		}
