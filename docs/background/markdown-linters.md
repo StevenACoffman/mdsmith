@@ -169,6 +169,66 @@ to CommonMark parsers). Dataview inline fields are not
 front matter and will not be read by mdsmith's
 `require`/`schema` directives.
 
+### [mdbase][]
+
+Specification for treating folders of Markdown files
+as typed, queryable data collections. Reference impl
+in TypeScript, with a Node CLI and a Rust LSP. MIT,
+version 0.2.1 (early release as of 2026-05). The same
+files-on-disk philosophy as mdsmith, but scoped to the
+data layer: types, queries, and rename refactoring
+rather than prose linting.
+
+A small example shows the overlap and the split.
+Both tools read this `.md` file as-is:
+
+```markdown
+---
+title: Migrate auth to OIDC
+status: in-progress
+priority: 3
+due: 2026-06-01
+---
+# Migrate auth to OIDC
+
+The current SAML flow has two open issues. We will
+swap to OIDC over the next sprint.
+
+See the [migration log](./auth-migration-log.md).
+```
+
+What each tool **does** with the same bytes:
+
+| Layer                                     | mdsmith                                                 | mdbase                                                    |
+|-------------------------------------------|---------------------------------------------------------|-----------------------------------------------------------|
+| YAML front matter                         | reads it; can validate shape via CUE schema             | reads it; validates against `_types/task.md`              |
+| Body content (prose, headings)            | lints line length, headings, prose, links               | not in scope                                              |
+| Cross-file link                           | flags broken `auth-migration-log.md` (MDS027)           | flags broken link (L4) and rewrites it on rename (L5)     |
+| `status: in-progress`                     | available to `mdsmith query`                            | filterable in Bases queries; appears in backlink graphs   |
+| `due: 2026-06-01`                         | available to query                                      | filterable with date arithmetic (`due <= today() + "7d"`) |
+| `mdsmith fix` runs                        | reformats tables, regenerates TOC/catalog               | n/a                                                       |
+| `mdbase rename` runs                      | n/a                                                     | moves the file and rewrites every incoming link           |
+| Body readability, structure, token budget | yes (MDS023 ARI, MDS024 sentences, MDS028 token budget) | no                                                        |
+
+The **shared** layer is the YAML front matter.
+Both tools read `status`, `priority`, `due` as
+structured fields. mdbase enforces field types
+out of the box via `_types/`. mdsmith does the
+same when a CUE schema is wired up via MDS020;
+without one, it treats them as plain YAML.
+
+The **current surface difference** sits in the
+body and the link graph. mdsmith ships prose,
+structure, and generated-content rules today.
+mdbase ships rename refactoring, the link graph,
+and richer queries today. Either surface is a
+snapshot, not a charter — see the deep-dive for
+evolutionary candidates either way.
+
+See the [deep-dive comparison][mdbase-deep-dive].
+It covers types, queries, validation, links, the fix
+engine, workflows, and how to run both tools together.
+
 Using language models (GPT-4, Claude, etc.) directly to
 check prose quality, conciseness, and style. This is
 emerging through dedicated CLI tools and AI review bots.
@@ -739,6 +799,9 @@ you need a stable rule set while these land.
 [Obsidian]: https://obsidian.md/
 [obsidian-fm]: https://help.obsidian.md/Editing+and+formatting/Obsidian+Flavored+Markdown
 [obsidian-linter]: https://github.com/platers/obsidian-linter
+<!-- mdbase links -->
+[mdbase]: https://mdbase.dev/
+[mdbase-deep-dive]: ../research/mdbase-vs-mdsmith/README.md
 <!-- mdsmith plan + security + reference links -->
 [mdsmith-sec]: ../security/2026-04-05-adversarial-markdown.md
 [conventions]: ../reference/conventions.md
