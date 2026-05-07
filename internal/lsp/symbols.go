@@ -37,14 +37,18 @@ func (s *Server) ensureIndex() *index.Index {
 			FollowSymlinks: cfg != nil && cfg.FollowSymlinks,
 		})
 		if err == nil {
-			s.buildIndexFromDisk(idx, cfg, root, files)
+			s.buildIndexFromDisk(idx, cfg, root, filterIgnored(cfg, files))
 		}
 	}
 	// Layer in any open buffers so unsaved edits are visible to
 	// symbol queries. The TOCTOU window between openURIs and get
 	// is tolerable: a missing doc just means another goroutine
 	// closed it, and the index already reflects that via the
-	// didClose handler's reload path.
+	// didClose handler's reload path. Open buffers ignore the
+	// ignore list — the user clearly wants this file in scope
+	// because they're editing it; matching the lint code-action
+	// path (which also runs on ignored buffers when explicitly
+	// invoked) keeps the navigation surface consistent.
 	for _, uri := range s.docs.openURIs() {
 		doc, ok := s.docs.get(uri)
 		if !ok {
@@ -210,8 +214,31 @@ func (s *Server) indexReloadFromDisk(absOrRel string) {
 // project's `files:` configuration: the symbol graph wants every
 // Markdown file even if a project narrows its lint scope, so
 // cross-file references resolve into linked-but-not-linted files.
+// The user's `ignore:` list is still applied via filterIgnored so
+// vendored content, fixtures, and generated trees stay out of the
+// outline / symbol picker.
 func indexPatterns() []string {
 	return []string{"**/*.md", "**/*.markdown"}
+}
+
+// filterIgnored drops paths matching cfg.Ignore from files. The
+// ignore list expresses the user's curated project scope —
+// putting `testdata/**` or `vendor/**` there should keep those
+// trees out of `documentSymbol` outlines and `workspace/symbol`
+// hits. Open buffers bypass this filter (the user editing a file
+// always wants it visible).
+func filterIgnored(cfg *config.Config, files []string) []string {
+	if cfg == nil || len(cfg.Ignore) == 0 {
+		return files
+	}
+	out := files[:0]
+	for _, rel := range files {
+		if config.IsIgnored(cfg.Ignore, rel) {
+			continue
+		}
+		out = append(out, rel)
+	}
+	return out
 }
 
 // pathToURI returns a `file://` URI for an absolute path. The

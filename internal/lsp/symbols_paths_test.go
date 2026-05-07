@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeduden/mdsmith/internal/config"
 	"github.com/jeduden/mdsmith/internal/lsp/index"
 )
 
@@ -151,6 +152,86 @@ func TestOutgoingCallsCoalescedItemHasNoAnchor(t *testing.T) {
 	assert.Empty(t, calls[0].To.Data.Anchor,
 		"coalesced item must have empty Anchor; otherwise follow-up calls filter to one heading")
 	assert.Len(t, calls[0].FromRanges, 2)
+}
+
+func TestEnsureIndexAppliesIgnoreList(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, ".mdsmith.yml"),
+		[]byte("ignore:\n  - vendor/**\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(tmp, "vendor"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "vendor", "vend.md"),
+		[]byte("# Vendored\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "doc.md"),
+		[]byte("# Doc\n"), 0o644))
+
+	h := newHarness(t)
+	rootURI := pathToFileURI(t, tmp)
+	_, errResp := h.request("initialize", initializeParams{
+		RootURI: &rootURI, Capabilities: clientCapabilities{},
+	})
+	require.Nil(t, errResp)
+	h.srv.settingsMu.Lock()
+	h.srv.settings.Run = runOff
+	h.srv.settingsMu.Unlock()
+	h.srv.reloadConfig()
+	h.srv.invalidateIndex()
+	idx := h.srv.ensureIndex()
+
+	files := idx.Files()
+	assert.Contains(t, files, "doc.md")
+	for _, f := range files {
+		assert.NotContains(t, f, "vendor",
+			"ignore-list path should be excluded from the symbol index: %s", f)
+	}
+}
+
+func TestEnsureIndexOpenBufferBypassesIgnoreList(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, ".mdsmith.yml"),
+		[]byte("ignore:\n  - notes.md\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "notes.md"),
+		[]byte("# Notes\n"), 0o644))
+
+	h := newHarness(t)
+	rootURI := pathToFileURI(t, tmp)
+	_, errResp := h.request("initialize", initializeParams{
+		RootURI: &rootURI, Capabilities: clientCapabilities{},
+	})
+	require.Nil(t, errResp)
+	h.srv.settingsMu.Lock()
+	h.srv.settings.Run = runOff
+	h.srv.settingsMu.Unlock()
+	h.srv.reloadConfig()
+	h.srv.invalidateIndex()
+
+	uri := rootURI + "/notes.md"
+	h.notify("textDocument/didOpen", didOpenTextDocumentParams{
+		TextDocument: textDocumentItem{URI: uri, LanguageID: "markdown", Version: 1, Text: "# Notes\n"},
+	})
+	// Even though notes.md is ignored on disk, the open buffer
+	// surfaces it: the user is editing the file, so it has to be
+	// navigable. Drive a navigation request to make sure didOpen
+	// has been processed before we sample the index.
+	_, _ = h.request("workspace/symbol", workspaceSymbolParams{Query: ""})
+	assert.Contains(t, h.srv.idx.Files(), "notes.md")
+}
+
+func TestFilterIgnoredHelper(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{Ignore: []string{"vendor/**", "*.tmp.md"}}
+	got := filterIgnored(cfg, []string{
+		"doc.md",
+		"vendor/lib.md",
+		"draft.tmp.md",
+		"src/file.md",
+	})
+	assert.Equal(t, []string{"doc.md", "src/file.md"}, got)
+	// Nil cfg passes through.
+	assert.Equal(t, []string{"a", "b"}, filterIgnored(nil, []string{"a", "b"}))
+	// Empty Ignore passes through.
+	assert.Equal(t, []string{"a"}, filterIgnored(&config.Config{}, []string{"a"}))
 }
 
 func TestEffectiveKindsForNoCfgWithScalarKind(t *testing.T) {

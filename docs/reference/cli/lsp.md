@@ -91,11 +91,10 @@ request and is kept in sync via:
 - `**/*.md` watcher events refresh one file from disk
   when it changes outside any open buffer.
 - `.mdsmith.yml` changes invalidate the whole index
-  because `kind-assignment` globs and `follow-symlinks`
-  may shift scope. The index walks every Markdown file
-  under the workspace regardless of the project's lint
-  ignore list, so changes to `ignore:` do not affect
-  what the index sees.
+  because `ignore:`, `kind-assignment:`, and
+  `follow-symlinks:` all shift what the index sees.
+  Open buffers bypass `ignore:` (the user editing a
+  file always wants it visible).
 
 ### Symbol kinds
 
