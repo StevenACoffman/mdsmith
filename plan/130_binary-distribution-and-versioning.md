@@ -56,9 +56,9 @@ all three gaps in one pass.
 Use the `optionalDependencies` per-platform pattern
 (esbuild, biome, swc, and turbo all ship this way).
 
-The user installs one root package, `mdsmith`. It
-lists `optionalDependencies` for one subpackage per
-platform:
+The user installs one root package, `@mdsmith/cli`
+(unscoped `mdsmith` is taken). It lists
+`optionalDependencies` per platform:
 
 - `@mdsmith/linux-x64`
 - `@mdsmith/linux-arm64`
@@ -103,37 +103,15 @@ does not silently do nothing. Works under `pip`,
 `uv pip`, `pipx`, `uvx`, and `python -m mdsmith`.
 Sources live under `python/`.
 
-### asdf
+### asdf and mise
 
-Publish a separate repo `jeduden/asdf-mdsmith` with
-the standard plugin layout:
-
-- `bin/list-all` calls `git ls-remote --tags` on the
-  mdsmith repo, then strips `refs/tags/`, drops the
-  `^{}` deref entries, and removes the leading `v`
-  so the output is plain `X.Y.Z` as asdf expects. No
-  GitHub token required; works through HTTPS git.
-- `bin/download` `curl -fL`s the matching release
-  asset.
-- `bin/install` verifies it against `checksums.txt`
-  and places the binary as `bin/mdsmith`.
-- `bin/list-bin-paths` prints `bin`.
-
-After one release cycle, file a PR to
-`asdf-vm/asdf-plugins` so `asdf plugin add mdsmith`
-resolves without an explicit URL.
-
-### mise
-
-Preferred path: add an entry to `mise-plugins/registry`
-using the `ubi` backend. mise's `ubi` reads GitHub
-release assets directly given our naming, so
-`mise use mdsmith@latest` works without us shipping
-plugin code. Fallback: mise consumes asdf plugins
-natively, so `mise use asdf:jeduden/asdf-mdsmith`
-keeps working even before the registry PR lands.
-Document the registry path as primary in
-`docs/guides/install.md` (task 9).
+The asdf-plugin repo and the mise registry entry
+both live outside this repo, so they are tracked in
+[plan/145](145_asdf-mise-registry-submissions.md).
+Until those land, users on mise can still pull the
+binary directly via the `ubi:` backend
+(`mise use ubi:jeduden/mdsmith@latest`), which the
+release smoke-test exercises today.
 
 ### VS Code Marketplace and Open VSX
 
@@ -178,8 +156,8 @@ The npm root, npm platform subpackages, and the
 Python wheel all need the same treatment.
 
 Approach: never commit a real version. Pin every
-manifest at `"version": "0.0.0-dev"`. A new
-`scripts/set-version.sh <ver>` helper takes the
+manifest at `"version": "0.0.0-dev"`. The internal
+`cmd/mdsmith-release stamp <ver>` CLI takes the
 cleaned tag (no leading `v`) and rewrites every
 tracked manifest:
 
@@ -204,88 +182,78 @@ the tag on every channel.
 
 ## Tasks
 
-1. Add `scripts/set-version.sh` plus a unit test that
-   asserts each tracked manifest is rewritten
-   correctly and the script is idempotent.
-2. Add a `version-guard` step to
-   [ci.yml](../.github/workflows/ci.yml) that fails
-   on non-tag builds when any tracked manifest has a
-   non-`0.0.0-dev` version.
-3. Set
-   [editors/vscode/package.json](../editors/vscode/package.json)
-   `version` to `0.0.0-dev`. In the `vscode` job of
-   [release.yml](../.github/workflows/release.yml),
-   run `set-version.sh` before `vsce package`, then
-   add two publish steps that reuse the exact `.vsix`
-   the job produced: `bunx --bun @vscode/vsce publish
-   --packagePath <vsix> --pat $VSCE_PAT` (Marketplace)
-   and `bunx --bun ovsx publish --packagePath <vsix>
-   --pat $OVSX_PAT` (Open VSX). Before the first tag,
-   claim the `jeduden` namespace on Open VSX, mint a
-   Marketplace PAT scoped to "Marketplace > Manage",
-   and store both as `VSCE_PAT` and `OVSX_PAT`
-   repository secrets.
-4. Scaffold `npm/mdsmith/` with `package.json` and
-   `bin/mdsmith.js`. Add a Bun unit test that mocks
-   `os.platform()` and `os.arch()` and verifies the
-   shim resolves to the expected platform package
-   path. Mirror the lint/format setup used by the VS
-   Code extension.
-5. Add `scripts/build-npm-platforms.sh` that, given
-   the downloaded GitHub release artifacts, emits
-   one directory per platform with the binary in
-   `bin/` and a generated `package.json`. Add a new
-   `npm` job in
-   [release.yml](../.github/workflows/release.yml)
-   that depends on `build`, downloads artifacts, runs
-   the generator, and `npm publish --access public`s
-   each subpackage. Root publishes last so users
-   never see a missing optional dependency.
-6. Add `python/pyproject.toml`,
-   `python/mdsmith/__init__.py`, and
-   `python/mdsmith/__main__.py`. Add
-   `scripts/build-wheels.sh`. Wire a `pypi` job in
-   [release.yml](../.github/workflows/release.yml)
-   that stages the binary artifacts under
-   `python/mdsmith/_bin/`, builds one wheel per
-   platform tag with `python -m build`, and uploads
-   via `pypa/gh-action-pypi-publish` using PyPI
-   trusted publishing (OIDC). No long-lived token.
-7. Create the `jeduden/asdf-mdsmith` repo with
-   `bin/list-all`, `bin/download`, `bin/install`, and
-   `bin/list-bin-paths`. Add a CI workflow that runs
-   `asdf install mdsmith latest` against the most
-   recent release and asserts `mdsmith version`
-   matches. Open a PR to `asdf-vm/asdf-plugins` after
-   one successful release cycle.
-8. Submit a PR to `mise-plugins/registry` adding
-   mdsmith via the `ubi` backend pointing at
-   `jeduden/mdsmith` releases.
-9. Add `docs/guides/install.md` covering
-   `npm i -g mdsmith`, `npx mdsmith`,
-   `pip install mdsmith`, `uvx mdsmith`,
-   `mise use mdsmith@latest`, `asdf install mdsmith`,
-   the Marketplace and Open VSX install paths for
-   the VS Code extension, and the existing
-   direct-download flow. Link it from the README and
-   the catalog in [CLAUDE.md](../CLAUDE.md).
-10. Add a post-release smoke-test job that runs in
-    one clean container per channel
-    (`node:lts-alpine`, `python:3.12-slim`, a mise
-    base image) and asserts `mdsmith version` prints
-    the expected tag.
+- [x] Add `cmd/mdsmith-release/` (subcommands stamp,
+  check, build-npm, build-wheels) and Go tests under
+  `internal/release/`. stamp is idempotent.
+- [x] Add a `version-guard` step to
+  [ci.yml](../.github/workflows/ci.yml) that fails
+  on non-tag builds when any tracked manifest has a
+  non-`0.0.0-dev` version.
+- [x] Set
+  [editors/vscode/package.json](../editors/vscode/package.json)
+  `version` to `0.0.0-dev`. In the `vscode` job of
+  [release.yml](../.github/workflows/release.yml),
+  run `mdsmith-release stamp` before `vsce package`,
+  then
+  add two publish steps that reuse the exact `.vsix`
+  the job produced: `bunx --bun @vscode/vsce publish
+  --packagePath <vsix> --pat $VSCE_PAT` (Marketplace)
+  and `bunx --bun ovsx publish --packagePath <vsix>
+  --pat $OVSX_PAT` (Open VSX). Before the first tag,
+  claim the `jeduden` namespace on Open VSX, mint a
+  Marketplace PAT scoped to "Marketplace > Manage",
+  and store both as `VSCE_PAT` and `OVSX_PAT`
+  repository secrets.
+- [x] Scaffold `npm/mdsmith/` with `package.json` and
+  `bin/mdsmith.js`. Add a Bun unit test that mocks
+  `os.platform()` and `os.arch()` and verifies the
+  shim resolves to the expected platform package
+  path. Mirror the lint/format setup used by the VS
+  Code extension.
+- [x] Add `mdsmith-release build-npm` that, given
+  the downloaded GitHub release artifacts, emits
+  one directory per platform with the binary in
+  `bin/` and a generated `package.json`. Add a new
+  `npm` job in
+  [release.yml](../.github/workflows/release.yml)
+  that depends on `build`, downloads artifacts, runs
+  the generator, and `npm publish --access public`s
+  each subpackage. Root publishes last so users
+  never see a missing optional dependency.
+- [x] Add `python/pyproject.toml`,
+  `python/mdsmith/__init__.py`, and
+  `python/mdsmith/__main__.py`. Add
+  `mdsmith-release build-wheels`. Wire a `pypi` job in
+  [release.yml](../.github/workflows/release.yml)
+  that stages the binary artifacts under
+  `python/mdsmith/_bin/`, builds one wheel per
+  platform tag with `python -m build`, and uploads
+  via `pypa/gh-action-pypi-publish` using PyPI
+  trusted publishing (OIDC). No long-lived token.
+- [x] Add `docs/guides/install.md` covering
+  `npm i -g @mdsmith/cli`, `npx @mdsmith/cli`,
+  `pip install mdsmith`, `uvx mdsmith`,
+  `mise use mdsmith@latest`, `asdf install mdsmith`,
+  the Marketplace and Open VSX install paths for
+  the VS Code extension, and the existing
+  direct-download flow. Link it from the README and
+  the catalog in [CLAUDE.md](../CLAUDE.md).
+- [x] Add a post-release smoke-test job that runs
+  one clean container per channel and asserts
+  `mdsmith version` prints the expected tag.
 
 ## Acceptance Criteria
 
-- [ ] Pushing a `vX.Y.Z` tag publishes `mdsmith@X.Y.Z`
-      and the five platform subpackages on npm.
+- [ ] Pushing a `vX.Y.Z` tag publishes
+      `@mdsmith/cli@X.Y.Z` and the five
+      `@mdsmith/<platform>` subpackages on npm.
 - [ ] The same tag publishes `mdsmith==X.Y.Z` wheels
       for the five supported platform tags on PyPI.
 - [ ] The same tag still produces the existing GitHub
       release assets and `.vsix`.
-- [ ] `npm i -g mdsmith && mdsmith version` prints
-      `mdsmith vX.Y.Z` on linux-x64, linux-arm64,
-      darwin-x64, darwin-arm64, and win32-x64.
+- [ ] `npm i -g @mdsmith/cli && mdsmith version`
+      prints `mdsmith vX.Y.Z` on all five supported
+      platforms.
 - [ ] `pip install mdsmith==X.Y.Z && mdsmith version`
       and `uvx mdsmith@X.Y.Z version` print
       `mdsmith vX.Y.Z` on the same five platforms.

@@ -62,6 +62,19 @@ jobs:
         with:
           bun-version: "1.3.11"
           no-cache: true
+      - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version-file: go.mod
+          # zizmor's cache-poisoning rule treats the GitHub Actions
+          # tool cache as an unprotected mutation surface in
+          # release-context workflows; setup-go would default to
+          # caching the module download. Disable it to match the
+          # build job above.
+          cache: false
+      - name: Stamp tracked manifests with the tag
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: go run ./cmd/mdsmith-release stamp "${VERSION#v}"
       - name: Install extension dependencies
         working-directory: editors/vscode
         run: bun install --frozen-lockfile
@@ -76,14 +89,160 @@ jobs:
           VERSION: ${{ github.ref_name }}
         working-directory: editors/vscode
         run: |
-          # Strip the leading 'v' so the .vsix carries a clean SemVer.
           ver="${VERSION#v}"
           bunx --bun @vscode/vsce package --no-dependencies \
             --out "mdsmith-${ver}.vsix"
+      # Verify the publisher tokens are set BEFORE the publish steps
+      # run. The publishes themselves use `continue-on-error: true`
+      # so a transient registry outage does not block the GitHub
+      # release. That same flag would also hide an unset/empty
+      # secret, so guard misconfiguration here (no continue-on-error)
+      # while still letting outages slide on the actual publish.
+      - name: Verify Marketplace and Open VSX tokens are set
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          missing=""
+          [ -n "${VSCE_PAT:-}" ] || missing="$missing VSCE_PAT"
+          [ -n "${OVSX_PAT:-}" ] || missing="$missing OVSX_PAT"
+          if [ -n "$missing" ]; then
+            echo "missing required repo secret(s):$missing" >&2
+            exit 1
+          fi
+      - name: Publish to Visual Studio Marketplace
+        # The GitHub release .vsix is the documented fallback, so a
+        # transient Marketplace outage should not block the release
+        # job downstream of this one. Misconfiguration is caught by
+        # the preceding verify step, so this only swallows runtime
+        # registry errors.
+        continue-on-error: true
+        env:
+          VERSION: ${{ github.ref_name }}
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        working-directory: editors/vscode
+        # Reuse the exact .vsix the artifact upload below ships, so
+        # Marketplace, Open VSX, and the GitHub release are byte-
+        # identical. The publisher namespace is jeduden — claim it
+        # in https://aka.ms/vscode-create-publisher before the first
+        # release. PAT scope: Marketplace > Manage. Azure caps PATs
+        # at one year; rotate annually and record the date in
+        # CLAUDE.md.
+        run: |
+          ver="${VERSION#v}"
+          bunx --bun @vscode/vsce publish \
+            --no-dependencies \
+            --packagePath "mdsmith-${ver}.vsix" \
+            --pat "$VSCE_PAT"
+      - name: Publish to Open VSX
+        continue-on-error: true
+        env:
+          VERSION: ${{ github.ref_name }}
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        working-directory: editors/vscode
+        # Open VSX is the registry VSCodium, Cursor, Theia, and
+        # Gitpod query. Claim the jeduden namespace on
+        # https://open-vsx.org and store the publisher token as the
+        # OVSX_PAT secret before the first release. Rotate annually.
+        run: |
+          ver="${VERSION#v}"
+          bunx --bun ovsx publish \
+            --packagePath "mdsmith-${ver}.vsix" \
+            --pat "$OVSX_PAT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: mdsmith-vscode-extension
           path: editors/vscode/mdsmith-*.vsix
+
+  npm:
+    needs: [build]
+    runs-on: ubuntu-latest
+    # `id-token: write` lets `npm publish --provenance` mint an OIDC
+    # token so the npm registry stamps each tarball with verifiable
+    # build metadata pointing at this exact workflow run.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+      - name: Stamp tracked manifests with the tag
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: go run ./cmd/mdsmith-release stamp "${VERSION#v}"
+      - name: Download release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Build platform packages
+        run: go run ./cmd/mdsmith-release build-npm artifacts npm/dist
+      - name: Publish platform packages
+        # Platform packages publish first so the root never advertises
+        # an optionalDependency npm cannot find. The root package
+        # publishes last, after every platform exists.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for pkg in npm/dist/*; do
+            (cd "$pkg" && npm publish --access public --provenance)
+          done
+      - name: Publish root package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        working-directory: npm/mdsmith
+        run: npm publish --access public --provenance
+
+  pypi:
+    needs: [build]
+    runs-on: ubuntu-latest
+    # `id-token: write` lets pypa/gh-action-pypi-publish use Trusted
+    # Publishing (OIDC) so PyPI accepts each upload without a
+    # long-lived API token. Configure the trusted publisher on
+    # pypi.org → Manage Project → Publishing before the first tag.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Stamp tracked manifests with the tag
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: go run ./cmd/mdsmith-release stamp "${VERSION#v}"
+      - name: Install build tooling
+        # `python -m build` and `python -m wheel` orchestrate the
+        # wheel build and the platform-tag retag respectively;
+        # hatchling is the build backend pyproject.toml selects.
+        run: python -m pip install --upgrade build wheel hatchling
+      - name: Download release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Build platform wheels
+        run: go run ./cmd/mdsmith-release build-wheels artifacts python/dist
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@6733eb7d741f0b11ec6a39b58540dab7590f9b7d # v1.14.0
+        with:
+          packages-dir: python/dist
 
   release:
     needs: [build, vscode]
@@ -105,3 +264,93 @@ jobs:
           files: |
             mdsmith-*
             checksums.txt
+
+  smoke-test:
+    # Wait until every channel is on the new version before checking
+    # — the npm and PyPI registries can take ~60s to surface a fresh
+    # publish, so the channel-specific install commands re-run if the
+    # registry briefly returns the previous version.
+    needs: [npm, pypi, release]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - channel: npm
+            # node:lts (debian-slim) ships bash, so the install step
+            # runs under the action's default `bash -e` shell. Alpine
+            # would force `shell: sh` everywhere because busybox has
+            # no bash before `apk add` runs.
+            container: node:lts
+            install: |
+              # npm registry propagation can lag the publish by ~60s,
+              # so retry with backoff until the just-published version
+              # is resolvable. Mirrors the pip retry loop below.
+              ok=0
+              for attempt in 1 2 3 4 5; do
+                if npm install -g --force "@mdsmith/cli@${VERSION#v}"; then
+                  ok=1; break
+                fi
+                sleep 15
+              done
+              if [ "$ok" -ne 1 ]; then
+                echo "npm install never succeeded after 5 attempts" >&2
+                exit 1
+              fi
+            run: mdsmith version
+          - channel: pip
+            container: python:3.12-slim
+            install: |
+              python -m pip install --upgrade pip
+              # `--upgrade` forces pip to pick the just-published
+              # wheel rather than a cached older one.
+              ok=0
+              for attempt in 1 2 3 4 5; do
+                if python -m pip install --upgrade "mdsmith==${VERSION#v}"; then
+                  ok=1; break
+                fi
+                sleep 15
+              done
+              if [ "$ok" -ne 1 ]; then
+                echo "pip install never succeeded after 5 attempts" >&2
+                exit 1
+              fi
+            run: mdsmith version
+          - channel: mise
+            container: jdxcode/mise:latest
+            # `ubi:jeduden/mdsmith@VER` resolves the binary directly
+            # off the GitHub release the same `release` job above
+            # just published. The shorter `mdsmith@VER` form depends
+            # on the mise-plugins/registry follow-up; until that PR
+            # lands the smoke-test would fail on every release, so
+            # exercise the form that works today.
+            install: |
+              ok=0
+              for attempt in 1 2 3 4 5; do
+                if mise use -g "ubi:jeduden/mdsmith@${VERSION#v}"; then
+                  ok=1; break
+                fi
+                sleep 15
+              done
+              if [ "$ok" -ne 1 ]; then
+                echo "mise install never succeeded after 5 attempts" >&2
+                exit 1
+              fi
+            run: |
+              eval "$(mise activate bash --shims)"
+              mdsmith version
+    runs-on: ubuntu-latest
+    container: ${{ matrix.container }}
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - name: Install
+        run: ${{ matrix.install }}
+      - name: Verify version
+        run: |
+          got=$(${{ matrix.run }})
+          want="mdsmith ${VERSION}"
+          if [ "$got" != "$want" ]; then
+            echo "channel=${{ matrix.channel }}: got '$got', want '$want'" >&2
+            exit 1
+          fi
+          echo "channel=${{ matrix.channel }}: $got"

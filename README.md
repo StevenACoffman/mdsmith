@@ -82,7 +82,14 @@ row: "- [{summary}]({filename})"
 
 ```bash
 go install github.com/jeduden/mdsmith/cmd/mdsmith@latest
+npm install -g @mdsmith/cli    # or: npx @mdsmith/cli
+pip install mdsmith            # or: uvx mdsmith / pipx install mdsmith
 ```
+
+More options live in
+[docs/guides/install.md](docs/guides/install.md). It covers direct
+downloads, the VS Code extension on the Marketplace and Open VSX,
+and asdf and mise once their registry entries land.
 
 ## 🚀 Usage
 
