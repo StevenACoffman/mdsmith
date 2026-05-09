@@ -38,6 +38,7 @@ uses stdio either way.
 | `workspaceSymbolProvider`         | Substring search across headings, link refs, front-matter `title:`, and kind names |
 | `callHierarchyProvider`           | File-level call graph over `<?include?>`, `<?catalog?>`, `<?build?>`, and links    |
 | `completionProvider`              | Heading anchors, link-ref labels, kind names, and directive file paths             |
+| `renameProvider`                  | Heading + link-reference label renames, with `prepareProvider: true`               |
 | `workspace/didChangeWatchedFiles` | Re-lint open buffers on `.mdsmith.yml` change; index refresh on Markdown changes   |
 
 `mdsmith.run` controls when the server actually re-lints:
@@ -229,6 +230,67 @@ Both `.md` and `.markdown` files appear as candidates.
 
 Image links (`![alt](#…`) do not trigger anchor completion.
 Completion inside fenced or indented code blocks returns an empty list.
+
+### Rename
+
+`textDocument/prepareRename` returns the editable range for
+the symbol under the cursor. The reply also carries a
+placeholder string. The client pre-fills the popup with it.
+Returning `null` skips the rename at unsupported positions.
+
+| Cursor on…                    | `prepareRename` range                                        |
+|-------------------------------|--------------------------------------------------------------|
+| ATX heading (`## Setup`)      | the heading text run, excluding leading and trailing `#`s    |
+| Setext heading (text line)    | the entire text line, trimmed of leading/trailing whitespace |
+| `[label]: url` definition     | the label text inside `[…]`                                  |
+| `[text][label]` reference use | the label text inside `[…][label]`                           |
+| Shortcut `[label]` use        | the label text inside `[…]`                                  |
+| Anywhere else                 | `null`                                                       |
+
+`textDocument/rename` answers with one `WorkspaceEdit`
+covering every affected file.
+
+- **Heading rename** rewrites the heading text on the source
+  line and every workspace anchor link pointing at the old
+  slug — both same-file `[t](#slug)` and cross-file
+  `[t](./other.md#slug)` forms. Slugs are recomputed via
+  `mdtext.CollectTOCItems`, so disambiguator shifts (when a
+  duplicate-name pair causes another heading's slug to slide
+  from `setup-1` back to `setup`) emit additional edits to
+  keep incoming links pointing at the right anchor.
+- **Link-reference rename** rewrites the `[label]: url`
+  definition and every `[text][label]` and shortcut
+  `[label]` use in the same file. Reference labels are
+  file-local in CommonMark, so the WorkspaceEdit never
+  spills into other files.
+
+#### Collision contract
+
+A rename fails with an LSP `InvalidParams` error in two
+cases. The server returns the error rather than shift the
+disambiguator silently. It also returns the error rather
+than overwrite a co-defined label. The cases are:
+
+- The renamed heading's bare slug — `mdtext.Slugify(newName)`
+  — equals another heading's bare slug in the same file.
+- The renamed link-reference label normalizes to the same
+  value as another `[label]: url` definition in the same
+  file.
+
+The error's `data` field carries the colliding heading or
+label name so the client can surface it in the rename UI:
+
+```jsonc
+{
+  "code": -32602,
+  "message": "rename would collide with heading Foo",
+  "data": { "conflict": "Foo" }
+}
+```
+
+MDS027, MDS028, and MDS029 would surface the same
+breakage on the next lint pass. The LSP error catches it
+sooner. No edit reaches the buffer.
 
 ## Configuration discovery
 
