@@ -317,16 +317,27 @@ jobs:
           subject-path: "mdsmith-*"
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # Pin cosign to a known v3.x release. The sign-blob step
+          # below relies on `--bundle` being the required output
+          # path (cosign 3.0.0 promoted it from optional to
+          # required); pinning shields the release from a future
+          # installer default rolling forward to a major that
+          # changes the bundle contract again.
+          cosign-release: "v3.0.6"
       - name: Sign checksums with cosign
         # Keyless Sigstore signature on the checksum file. The
         # GitHub OIDC token binds the signature to this exact
         # workflow file at this exact tag, so an attacker who
         # rewrites checksums.txt on the release page can't also
         # forge a matching signature without compromising
-        # release.yml on this repo. Verify with:
+        # release.yml on this repo. The bundle file carries both
+        # the signature and the signing certificate; cosign 3.x
+        # deprecated the separate --output-signature /
+        # --output-certificate flags in favor of --bundle.
+        # Verify with:
         #   cosign verify-blob \
-        #     --certificate checksums.txt.pem \
-        #     --signature checksums.txt.sig \
+        #     --bundle checksums.txt.bundle \
         #     --certificate-identity-regexp \
         #       "^https://github.com/jeduden/mdsmith/.github/workflows/release.yml@" \
         #     --certificate-oidc-issuer \
@@ -336,8 +347,7 @@ jobs:
           COSIGN_YES: "true"
         run: |
           cosign sign-blob \
-            --output-signature checksums.txt.sig \
-            --output-certificate checksums.txt.pem \
+            --bundle checksums.txt.bundle \
             checksums.txt
       - name: Create release
         env:
@@ -348,8 +358,7 @@ jobs:
           files: |
             mdsmith-*
             checksums.txt
-            checksums.txt.sig
-            checksums.txt.pem
+            checksums.txt.bundle
 
   smoke-test:
     # Wait until every channel is on the new version before checking

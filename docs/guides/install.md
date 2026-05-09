@@ -153,14 +153,15 @@ gh attestation verify mdsmith-linux-amd64 \
   -R jeduden/mdsmith
 ```
 
-Verify the checksums-file signature with `cosign`:
+Verify the checksums-file signature with `cosign`
+(requires cosign v3.0.0 or newer — earlier versions
+do not accept `verify-blob --bundle`; check yours
+with `cosign version`):
 
 ```bash
-curl -L -o checksums.txt.sig "$base/checksums.txt.sig"
-curl -L -o checksums.txt.pem "$base/checksums.txt.pem"
+curl -L -o checksums.txt.bundle "$base/checksums.txt.bundle"
 cosign verify-blob \
-  --certificate checksums.txt.pem \
-  --signature   checksums.txt.sig \
+  --bundle checksums.txt.bundle \
   --certificate-identity-regexp \
     "^https://github.com/jeduden/mdsmith/.github/workflows/release.yml@" \
   --certificate-oidc-issuer \
