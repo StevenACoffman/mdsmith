@@ -452,9 +452,8 @@ func (s *Server) renameHeading(
 	}
 	changes := map[string][]textEdit{p.TextDocument.URI: {headingEdit}}
 	for old, new := range slugRemapPairs(oldSlugs, newSlugs) {
-		if old == "" || old == new {
-			continue
-		}
+		// slugRemapPairs already filters empty and unchanged
+		// slugs, so no redundant guard is needed here.
 		s.appendAnchorEditsForHeading(changes, idx, rel, old, new)
 	}
 	stableSortEdits(changes)
@@ -1005,14 +1004,16 @@ func refUseEditsInBody(
 // when the source position can't be recovered (e.g. nested in an
 // unsupported block) so the caller can skip the use rather than
 // emit a corrupt edit.
+//
+// Goldmark guarantees a parsed reference link has at least one
+// text segment, so linkTextBounds always returns a valid offset
+// pair — the textStart-from-AST → bodyLine → lineStart chain
+// stays inside the table by construction.
 func refUseEdit(
 	l *ast.Link, body []byte, lines [][]byte, fmOffset int, newName string,
 	bodyIdx bodyLineIndex,
 ) (textEdit, bool) {
 	textStart, textEnd := linkTextBounds(l, body)
-	if textStart < 0 {
-		return textEdit{}, false
-	}
 	bodyLine := bodyIdx.LineOfOffset(textStart)
 	fileLine := bodyLine + fmOffset
 	if fileLine-1 >= len(lines) {
@@ -1020,9 +1021,6 @@ func refUseEdit(
 	}
 	row := lines[fileLine-1]
 	lineStart := bodyIdx.LineStart(bodyLine)
-	if lineStart < 0 {
-		return textEdit{}, false
-	}
 	textOpenCol := textStart - lineStart - 1 // include the `[`
 	if textOpenCol < 0 {
 		textOpenCol = 0
