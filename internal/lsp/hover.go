@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"strings"
 	"sync"
 
 	"github.com/yuin/goldmark/ast"
@@ -23,6 +24,32 @@ var directiveToDocFile = map[string]string{
 	"build":               "build.md",
 	"allow-empty-section": "enforcing-structure.md",
 	"require":             "enforcing-structure.md",
+}
+
+// ruleDocCache holds pre-loaded rule documentation, built once on first use.
+var ruleDocCache struct {
+	sync.Once
+	docs map[string]string // uppercase rule ID → front-matter-stripped content
+}
+
+// cachedRuleDoc returns the stripped documentation for the rule with the given
+// code, or ("", false) when not found. The first call loads all embedded rule
+// READMEs; subsequent calls are O(1) map lookups.
+func cachedRuleDoc(code string) (string, bool) {
+	ruleDocCache.Do(func() {
+		all, err := rules.ListRules()
+		if err != nil {
+			ruleDocCache.docs = map[string]string{}
+			return
+		}
+		m := make(map[string]string, len(all))
+		for _, r := range all {
+			m[strings.ToUpper(r.ID)] = rules.StripFrontMatter(r.Content)
+		}
+		ruleDocCache.docs = m
+	})
+	doc, ok := ruleDocCache.docs[strings.ToUpper(code)]
+	return doc, ok
 }
 
 // directiveDocCache holds parsed directive doc content, loaded once.
@@ -119,11 +146,11 @@ func (s *Server) handleHover(msg *requestMessage) {
 // message on its own line, a blank line, then the rule's help text.
 // Unknown rules get a brief fallback pointing at `mdsmith help rule`.
 func ruleHoverContent(d Diagnostic) string {
-	docs, err := rules.LookupRule(d.Code)
-	if err != nil {
+	doc, ok := cachedRuleDoc(d.Code)
+	if !ok {
 		return fmt.Sprintf("**%s** %s\n\nSee `mdsmith help rule %s` for details.", d.Code, d.Message, d.Code)
 	}
-	return fmt.Sprintf("**%s** %s\n\n%s", d.Code, d.Message, docs)
+	return fmt.Sprintf("**%s** %s\n\n%s", d.Code, d.Message, doc)
 }
 
 // directiveHoverAt checks whether pos falls within a processing-instruction
