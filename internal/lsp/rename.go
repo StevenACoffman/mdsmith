@@ -360,8 +360,14 @@ func normalizedLabel(b []byte) string {
 
 // invalidLinkRefRune returns the first rune in s that would make
 // the resulting `[label]: …` line unparsable, or 0 when s is safe.
-// Newlines and bare brackets are the canonical breakers — both
-// terminate the label run before the literal text the user typed.
+//
+// Newlines force the label run onto a second line where the def
+// no longer parses. `]` ends the label early, leaving the rest
+// as paragraph text. `[` is technically permitted via escape
+// (`\[`), but emitting a raw `[` here would still confuse most
+// CommonMark renderers and our own ref-def regex, so we forbid
+// both bracket forms outright rather than auto-escaping the user's
+// typed text.
 func invalidLinkRefRune(s string) rune {
 	for _, r := range s {
 		switch r {

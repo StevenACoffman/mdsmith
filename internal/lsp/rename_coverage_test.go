@@ -1,7 +1,6 @@
 package lsp
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -570,6 +569,3 @@ func TestRefDefEditsInBodyOutOfRangeFileLine(t *testing.T) {
 	out := refDefEditsInBody(body, lines, 0, "a", "b")
 	require.Len(t, out, 1)
 }
-
-// silence unused-import warnings if context drops out later.
-var _ = context.Background

@@ -255,8 +255,9 @@ covering every affected file.
 - **Heading rename** rewrites the heading text on the source
   line and every workspace anchor link pointing at the old
   slug — both same-file `[t](#slug)` and cross-file
-  `[t](./other.md#slug)` forms. Slugs are recomputed via
-  `mdtext.CollectTOCItems`, so disambiguator shifts (when a
+  `[t](./other.md#slug)` forms. The rename mirrors
+  `mdtext.CollectTOCItems`' disambiguator pass over every
+  heading in the file, so disambiguator shifts (when a
   duplicate-name pair causes another heading's slug to slide
   from `setup-1` back to `setup`) emit additional edits to
   keep incoming links pointing at the right anchor.
