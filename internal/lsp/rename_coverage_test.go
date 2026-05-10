@@ -550,6 +550,58 @@ func TestRenameLinkRefAfterDidChangeRewritesLiveBuffer(t *testing.T) {
 	assert.NotEmpty(t, edit.Changes[uri])
 }
 
+// TestRenameHeadingAllowsSameBaseSlugRefresh verifies the
+// collision check skips renames whose new bare slug equals the
+// target heading's existing bare slug. A casing/punctuation edit
+// inside an existing duplicate-name group does not introduce a
+// new collision and must not be rejected.
+func TestRenameHeadingAllowsSameBaseSlugRefresh(t *testing.T) {
+	t.Parallel()
+	src := "# Top\n\n## Setup\n\nfirst\n\n## Setup\n\nsecond\n"
+	h, _, rootURI := rootedHarness(t, map[string]string{"a.md": src})
+	uri := rootURI + "/a.md"
+	h.notify("textDocument/didOpen", didOpenTextDocumentParams{
+		TextDocument: textDocumentItem{URI: uri, LanguageID: "markdown", Version: 1, Text: src},
+	})
+	_ = h.awaitNotification("textDocument/publishDiagnostics", 5*time.Second)
+	raw, errResp := h.request("textDocument/rename", renameParams{
+		TextDocument: textDocumentIdentifier{URI: uri},
+		// First `## Setup` (line 3, 1-based) → LSP line 2.
+		Position: Position{Line: 2, Character: 4},
+		// Same base slug ("setup") — this is a non-semantic refresh,
+		// not a collision.
+		NewName: "Setup!",
+	})
+	require.Nil(t, errResp)
+	var edit workspaceEdit
+	require.NoError(t, json.Unmarshal(raw, &edit))
+	require.Contains(t, edit.Changes, uri)
+	assert.Equal(t, "Setup!", edit.Changes[uri][0].NewText)
+}
+
+// TestRenameOnCodeBlockRefDefRejected mirrors
+// TestPrepareRenameSkipsCodeBlockDefLookalike at the rename
+// dispatch level: a client calling rename directly on a
+// code-block lookalike must get InvalidParams rather than a
+// silent no-op.
+func TestRenameOnCodeBlockRefDefRejected(t *testing.T) {
+	t.Parallel()
+	src := "# T\n\n```\n[fake]: https://x\n```\n"
+	h, _, rootURI := rootedHarness(t, map[string]string{"a.md": src})
+	uri := rootURI + "/a.md"
+	h.notify("textDocument/didOpen", didOpenTextDocumentParams{
+		TextDocument: textDocumentItem{URI: uri, LanguageID: "markdown", Version: 1, Text: src},
+	})
+	_ = h.awaitNotification("textDocument/publishDiagnostics", 5*time.Second)
+	_, errResp := h.request("textDocument/rename", renameParams{
+		TextDocument: textDocumentIdentifier{URI: uri},
+		Position:     Position{Line: 3, Character: 2},
+		NewName:      "real",
+	})
+	require.NotNil(t, errResp)
+	assert.Equal(t, codeInvalidParams, errResp.Code)
+}
+
 // TestPrepareRenameSkipsCodeBlockDefLookalike verifies that
 // prepareRename returns null for `[label]: url` lines inside a
 // fenced code block — those are content, not defs, and the

@@ -422,7 +422,17 @@ func (s *Server) handleRename(msg *requestMessage) {
 	switch res.Tag {
 	case index.TokenHeading:
 		s.renameHeading(msg, p, source, rel, line, res, p.NewName)
-	case index.TokenRefDef, index.TokenRefUse:
+	case index.TokenRefDef:
+		// Mirror prepareRename's gate: a `[label]: url`-shaped
+		// line inside a fenced code block or PI body isn't a
+		// real def, so refuse the rename rather than producing
+		// empty / off-target edits.
+		if !isValidRefDefLine(source, line) {
+			_ = s.t.writeError(msg.ID, codeInvalidParams, "rename not supported at this position")
+			return
+		}
+		s.renameLinkRef(msg, p, source, res.Label, p.NewName)
+	case index.TokenRefUse:
 		s.renameLinkRef(msg, p, source, res.Label, p.NewName)
 	default:
 		_ = s.t.writeError(msg.ID, codeInvalidParams, "rename not supported at this position")
@@ -523,10 +533,15 @@ func computeSlugRemap(source []byte, line int, newText string) ([]string, []stri
 	for i, h := range headings {
 		texts[i] = h.text
 	}
+	oldBase := mdtext.Slugify(headings[target].text)
 	texts[target] = newText
 	// Collision check: any other heading shares the new bare slug?
+	// Skip the check when the rename keeps the same base slug —
+	// a non-semantic edit (case, punctuation) inside an existing
+	// duplicate-name group doesn't *introduce* a new collision,
+	// so blocking it would surprise the user.
 	newBase := mdtext.Slugify(newText)
-	if newBase != "" {
+	if newBase != "" && newBase != oldBase {
 		for i, t := range texts {
 			if i == target {
 				continue

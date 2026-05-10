@@ -233,81 +233,50 @@ Completion inside fenced or indented code blocks returns an empty list.
 
 ### Rename
 
-`textDocument/prepareRename` returns the editable range for
-the symbol under the cursor. The reply also carries a
-placeholder string. The client pre-fills the popup with it.
-Returning `null` skips the rename at unsupported positions.
+`prepareRename` returns the rename range and a placeholder.
+The client pre-fills the popup with the placeholder. `null`
+skips the rename at positions that aren't renameable:
 
-| Cursor on…                       | `prepareRename` range                                        |
-|----------------------------------|--------------------------------------------------------------|
-| ATX heading (`## Setup`)         | the heading text run, excluding leading and trailing `#`s    |
-| Setext heading (text line)       | the entire text line, trimmed of leading/trailing whitespace |
-| `[label]: url` definition        | the label text inside `[…]`                                  |
-| `[text][label]` reference use    | the label text inside `[…][label]`                           |
-| Shortcut `[label]` use           | the label text inside `[…]`                                  |
-| Collapsed `[label][]` use        | the label text inside the leading `[…]`                      |
-| Trailing `[]` of a collapsed use | the label text inside the leading `[…]`                      |
-| Anywhere else                    | `null`                                                       |
+| Cursor on…                                       | Range                          |
+|--------------------------------------------------|--------------------------------|
+| ATX heading text run (excluding `#` markers)     | text between markers           |
+| Setext heading text line                         | the full text line, trimmed    |
+| `[label]: url` def                               | label inside `[…]`             |
+| `[text][label]` use, shortcut, or collapsed `[]` | label inside the leading `[…]` |
+| Anywhere else                                    | `null`                         |
 
-`textDocument/rename` answers with one `WorkspaceEdit`
-covering every affected file.
+`rename` answers with one `WorkspaceEdit`. Heading rename
+rewrites the heading text. It also rewrites every workspace
+anchor link that pointed at the old slug. Both same-file
+`[t](#slug)` and cross-file `[t](./other.md#slug)` forms
+update. The pass mirrors `mdtext.CollectTOCItems`'
+disambiguator. A duplicate-name pair shifting `setup-1`
+back to `setup` emits matching follow-up edits.
 
-- **Heading rename** rewrites the heading text on the source
-  line and every workspace anchor link pointing at the old
-  slug — both same-file `[t](#slug)` and cross-file
-  `[t](./other.md#slug)` forms. The rename mirrors
-  `mdtext.CollectTOCItems`' disambiguator pass over every
-  heading in the file, so disambiguator shifts (when a
-  duplicate-name pair causes another heading's slug to slide
-  from `setup-1` back to `setup`) emit additional edits to
-  keep incoming links pointing at the right anchor.
-- **Link-reference rename** rewrites the `[label]: url`
-  definition and every reference-style use in the same file:
-  full `[text][label]`, shortcut `[label]`, and collapsed
-  `[label][]` (the leading bracket pair carries the label
-  text in the collapsed form). Reference labels are
-  file-local in CommonMark, so the WorkspaceEdit never
-  spills into other files.
+Link-reference rename rewrites the `[label]: url` def plus
+every full / shortcut / collapsed use in the same file.
+CommonMark scopes labels per-file, so the edit never spans
+files.
 
 #### Collision contract
 
-A rename fails with an LSP `InvalidParams` error in two
-cases. The server returns the error rather than shift the
-disambiguator silently. It also returns the error rather
-than overwrite a co-defined label. The cases are:
+A rename fails with `InvalidParams` when:
 
-- The renamed heading's bare slug — `mdtext.Slugify(newName)`
-  — equals another heading's bare slug in the same file.
-- The renamed link-reference label normalizes to the same
-  value as another `[label]: url` definition in the same
-  file.
+- The renamed heading's bare slug equals another heading's
+  bare slug in the same file.
+- The renamed link-ref label normalizes to another
+  `[label]: url` def in the same file.
+- The new heading text slugifies to the empty string.
+- The new link-ref label contains `[`, `]`, or a newline.
 
-The error's `data` field carries the colliding heading or
-label name so the client can surface it in the rename UI:
+The error's `data` field names the colliding symbol:
 
 ```jsonc
-{
-  "code": -32602,
-  "message": "rename would collide with heading Foo",
-  "data": { "conflict": "Foo" }
-}
+{ "code": -32602, "message": "...", "data": { "conflict": "Foo" } }
 ```
 
-A later lint pass would catch the same breakage:
-MDS027 covers anchor links across files. MDS053 flags
-duplicate / unused link-reference definitions. MDS054
-flags uses pointing at undefined labels. The LSP error
-catches it sooner; no edit reaches the buffer.
-
-`InvalidParams` also fires for `newName` values the server
-can't safely write back into the document:
-
-- A heading rename whose new text slugifies to the empty
-  string (e.g. punctuation-only). The renamed heading would
-  have no addressable anchor.
-- A link-reference rename whose new label contains `[`,
-  `]`, or a newline. Inserting them unescaped would break
-  the `[label]: url` line and corrupt subsequent navigation.
+MDS027, MDS053, and MDS054 catch the same breakage on the
+next lint pass; the LSP error fires before any edit applies.
 
 ## Configuration discovery
 
