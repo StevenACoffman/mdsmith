@@ -369,6 +369,61 @@ func TestRenameOnPlainProseReturnsError(t *testing.T) {
 	assert.Equal(t, codeInvalidParams, errResp.Code)
 }
 
+// TestPrepareRenameOnRefUseReturnsLabelRange exercises
+// prepareRename for the cursor on a `[text][label]` reference
+// use, hitting the refUsePrepareRange path that the def-side
+// tests don't cover.
+func TestPrepareRenameOnRefUseReturnsLabelRange(t *testing.T) {
+	t.Parallel()
+	src := "# T\n\nSee [look][docs] inline.\n\n[docs]: https://x\n"
+	h, _, rootURI := rootedHarness(t, map[string]string{"a.md": src})
+	uri := rootURI + "/a.md"
+	h.notify("textDocument/didOpen", didOpenTextDocumentParams{
+		TextDocument: textDocumentItem{URI: uri, LanguageID: "markdown", Version: 1, Text: src},
+	})
+	_ = h.awaitNotification("textDocument/publishDiagnostics", 5*time.Second)
+
+	raw, errResp := h.request("textDocument/prepareRename", textDocumentPositionParams{
+		TextDocument: textDocumentIdentifier{URI: uri},
+		// Cursor inside `[look][docs]` — line 3 (0-based: 2),
+		// char 12 lands inside the second bracket pair.
+		Position: Position{Line: 2, Character: 12},
+	})
+	require.Nil(t, errResp)
+	var res prepareRenameResult
+	require.NoError(t, json.Unmarshal(raw, &res))
+	assert.Equal(t, "docs", res.Placeholder)
+}
+
+// TestRenameSetextHeading verifies the non-ATX heading rename
+// path. Setext headings cover the whole text line; the rename
+// edit replaces that line and leaves the underline intact.
+func TestRenameSetextHeading(t *testing.T) {
+	t.Parallel()
+	// Setext H2: "Setup" with `-----` underline on next line.
+	src := "Top\n===\n\nSetup\n-----\n\nbody\n"
+	h, _, rootURI := rootedHarness(t, map[string]string{"a.md": src})
+	uri := rootURI + "/a.md"
+	h.notify("textDocument/didOpen", didOpenTextDocumentParams{
+		TextDocument: textDocumentItem{URI: uri, LanguageID: "markdown", Version: 1, Text: src},
+	})
+	_ = h.awaitNotification("textDocument/publishDiagnostics", 5*time.Second)
+
+	raw, errResp := h.request("textDocument/rename", renameParams{
+		TextDocument: textDocumentIdentifier{URI: uri},
+		// Cursor on `Setup` (line 4, 1-based) → LSP line 3.
+		Position: Position{Line: 3, Character: 2},
+		NewName:  "Configuration",
+	})
+	require.Nil(t, errResp)
+	var edit workspaceEdit
+	require.NoError(t, json.Unmarshal(raw, &edit))
+	require.Contains(t, edit.Changes, uri)
+	require.Len(t, edit.Changes[uri], 1)
+	assert.Equal(t, "Configuration", edit.Changes[uri][0].NewText)
+	assert.Equal(t, 3, edit.Changes[uri][0].Range.Start.Line)
+}
+
 // TestPrepareRenameLabelPlaceholderPreservesCase verifies that
 // prepareRename returns the document's raw label text in
 // `placeholder`, not the lowercased / whitespace-collapsed form
