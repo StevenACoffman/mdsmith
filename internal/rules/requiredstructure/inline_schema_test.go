@@ -1,0 +1,301 @@
+package requiredstructure
+
+import (
+	"testing"
+
+	"github.com/jeduden/mdsmith/internal/lint"
+	"github.com/jeduden/mdsmith/internal/schema"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	// Imported for its init-time rule registration; the scope-rule
+	// override fixture relies on line-length being resolvable via
+	// rule.ByName at run time.
+	_ "github.com/jeduden/mdsmith/internal/rules/linelength"
+)
+
+// inlineSchema is a test helper that mirrors how the config merge
+// hands an inline schema to the rule: as a YAML-decoded map under
+// the rule's `inline-schema` setting.
+func inlineSchema(t *testing.T, m map[string]any) *schema.Schema {
+	t.Helper()
+	sch, err := schema.ParseInline(m, "test inline kind")
+	require.NoError(t, err)
+	return sch
+}
+
+func TestApplySettings_InlineSchemaParses(t *testing.T) {
+	r := &Rule{}
+	err := r.ApplySettings(map[string]any{
+		"inline-schema": map[string]any{
+			"sections": []any{
+				map[string]any{"heading": "Overview"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, r.InlineSchema)
+	require.Len(t, r.InlineSchema.Sections, 1)
+	assert.Equal(t, "Overview", r.InlineSchema.Sections[0].Heading)
+}
+
+func TestApplySettings_InlineSchemaWrongType(t *testing.T) {
+	r := &Rule{}
+	err := r.ApplySettings(map[string]any{
+		"inline-schema": "not-a-map",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "inline-schema must be a mapping")
+}
+
+func TestApplySettings_InlineSchemaInvalid(t *testing.T) {
+	r := &Rule{}
+	err := r.ApplySettings(map[string]any{
+		"inline-schema": map[string]any{
+			"sections": []any{map[string]any{"unknown": true}},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid inline-schema")
+}
+
+// TestCheck_InlineSchema_MissingSection is the inline-schema mirror
+// of TestCheck_MissingHeading (which uses the legacy file-based
+// path). Both must emit the same canonical message text so docs and
+// fixtures stay in sync across the two sources.
+func TestCheck_InlineSchema_MissingSection(t *testing.T) {
+	r := &Rule{InlineSchema: inlineSchema(t, map[string]any{
+		"closed": true,
+		"sections": []any{
+			map[string]any{"heading": "Goal"},
+			map[string]any{"heading": "Tasks"},
+		},
+	})}
+	f := newTestFile(t, "doc.md", "# My Plan\n\n## Goal\n\nGoal text.\n")
+	diags := r.Check(f)
+	expectDiagMsg(t, diags, `missing required section "## Tasks"`)
+}
+
+func TestCheck_InlineSchema_ParityWithFileSchema(t *testing.T) {
+	// File-based and inline schemas with equivalent structure must
+	// emit the same diagnostic for the same document — this is
+	// acceptance criterion #1 of plan 146.
+	fileSchema := writeSchema(t, "# ?\n\n## Goal\n\n## Tasks\n")
+	rFile := &Rule{Schema: fileSchema}
+	rInline := &Rule{InlineSchema: inlineSchema(t, map[string]any{
+		"closed": true,
+		"sections": []any{
+			map[string]any{"heading": "Goal"},
+			map[string]any{"heading": "Tasks"},
+		},
+	})}
+	doc := "# Plan\n\n## Goal\n\nx\n"
+	fFile := newTestFile(t, "doc.md", doc)
+	fInline := newTestFile(t, "doc.md", doc)
+	fileDiags := rFile.Check(fFile)
+	inlineDiags := rInline.Check(fInline)
+	require.Len(t, fileDiags, 1)
+	require.Len(t, inlineDiags, 1)
+	assert.Equal(t, fileDiags[0].Message, inlineDiags[0].Message)
+}
+
+func TestCheck_InlineSchema_OpenByDefault(t *testing.T) {
+	// With no `closed:` field, an inline schema tolerates unlisted
+	// headings between listed sections — acceptance criterion #3.
+	r := &Rule{InlineSchema: inlineSchema(t, map[string]any{
+		"sections": []any{
+			map[string]any{"heading": "Symptoms"},
+			map[string]any{"heading": "Diagnosis"},
+		},
+	})}
+	f := newTestFile(t, "doc.md",
+		"# Runbook\n\n## Symptoms\n\nx\n\n## Notes\n\ny\n\n## Diagnosis\n\nz\n")
+	diags := r.Check(f)
+	assert.Empty(t, diags, "open scope should not flag the unlisted Notes section")
+}
+
+func TestCheck_InlineSchema_ClosedFlagsUnlisted(t *testing.T) {
+	r := &Rule{InlineSchema: inlineSchema(t, map[string]any{
+		"closed": true,
+		"sections": []any{
+			map[string]any{"heading": "Symptoms"},
+			map[string]any{"heading": "Diagnosis"},
+		},
+	})}
+	f := newTestFile(t, "doc.md",
+		"# Runbook\n\n## Symptoms\n\nx\n\n## Notes\n\ny\n\n## Diagnosis\n\nz\n")
+	diags := r.Check(f)
+	require.NotEmpty(t, diags)
+	expectDiagMsg(t, diags, `unexpected section "## Notes"`)
+}
+
+func TestCheck_InlineSchema_WildcardSlot(t *testing.T) {
+	r := &Rule{InlineSchema: inlineSchema(t, map[string]any{
+		"closed": true,
+		"sections": []any{
+			map[string]any{"heading": "Overview"},
+			"...",
+			map[string]any{"heading": "References"},
+		},
+	})}
+	f := newTestFile(t, "doc.md",
+		"# RFC\n\n## Overview\n\nx\n\n## Decision\n\ny\n\n## References\n\nz\n")
+	diags := r.Check(f)
+	assert.Empty(t, diags,
+		"wildcard slot should tolerate the unlisted Decision section")
+}
+
+// TestCheck_InlineSchema_NestedThreeLevels exercises acceptance
+// criterion #2 — recursion to at least three levels of depth.
+func TestCheck_InlineSchema_NestedThreeLevels(t *testing.T) {
+	r := &Rule{InlineSchema: inlineSchema(t, map[string]any{
+		"sections": []any{
+			map[string]any{
+				"heading":  "Diagnosis",
+				"required": true,
+				"sections": []any{
+					map[string]any{
+						"heading":  "Step",
+						"required": true,
+						"sections": []any{
+							map[string]any{"heading": "Check", "required": true},
+							map[string]any{"heading": "Expected", "required": true},
+						},
+					},
+				},
+			},
+		},
+	})}
+	f := newTestFile(t, "doc.md", `# Runbook
+
+## Diagnosis
+
+### Step
+
+#### Check
+
+x
+
+#### Expected
+
+y
+`)
+	diags := r.Check(f)
+	assert.Empty(t, diags, "three-level nested tree should validate cleanly")
+}
+
+func TestCheck_InlineSchema_LevelMismatch(t *testing.T) {
+	// Acceptance criterion #6: mismatched heading depths flag a
+	// diagnostic naming expected vs actual levels.
+	r := &Rule{InlineSchema: inlineSchema(t, map[string]any{
+		"sections": []any{
+			map[string]any{
+				"heading":  "Diagnosis",
+				"required": true,
+				"sections": []any{
+					map[string]any{"heading": "Step", "required": true},
+				},
+			},
+		},
+	})}
+	f := newTestFile(t, "doc.md",
+		"# Runbook\n\n## Diagnosis\n\n## Step\n\nx\n")
+	diags := r.Check(f)
+	// Filter to MDS020 diagnostics.
+	var our []lint.Diagnostic
+	for _, d := range diags {
+		if d.RuleID == "MDS020" {
+			our = append(our, d)
+		}
+	}
+	require.NotEmpty(t, our)
+	expectDiagMsg(t, our, "heading level mismatch")
+	expectDiagMsg(t, our, "expected h3, got h2")
+}
+
+func TestCheck_InlineSchema_AliasMatches(t *testing.T) {
+	r := &Rule{InlineSchema: inlineSchema(t, map[string]any{
+		"sections": []any{
+			map[string]any{
+				"heading": "Symptoms",
+				"aliases": []any{"Indicators"},
+			},
+		},
+	})}
+	f := newTestFile(t, "doc.md", "# Runbook\n\n## Indicators\n\nx\n")
+	diags := r.Check(f)
+	assert.Empty(t, diags, "alias should match in place of primary heading")
+}
+
+func TestCheck_InlineSchema_FilenamePattern(t *testing.T) {
+	r := &Rule{InlineSchema: inlineSchema(t, map[string]any{
+		"require": map[string]any{
+			"filename": "RFC-[0-9][0-9][0-9][0-9].md",
+		},
+	})}
+	f := newTestFile(t, "draft.md", "# Draft\n")
+	diags := r.Check(f)
+	require.Len(t, diags, 1)
+	expectDiagMsg(t, diags, `filename "draft.md" does not match required pattern`)
+}
+
+func TestCheck_InlineSchema_FrontmatterCUE(t *testing.T) {
+	r := &Rule{InlineSchema: inlineSchema(t, map[string]any{
+		"frontmatter": map[string]any{
+			"id": `=~"^RFC-[0-9]{4}$"`,
+		},
+	})}
+	// Document FM has the wrong shape.
+	f := newTestFile(t, "doc.md",
+		"---\nid: NOT-AN-RFC\n---\n# Doc\n")
+	diags := r.Check(f)
+	require.NotEmpty(t, diags)
+	expectDiagMsg(t, diags,
+		"front matter does not satisfy schema CUE constraints")
+}
+
+// TestCheck_InlineSchema_PerScopeRuleOverride covers acceptance
+// criterion #7: a schema `rules:` block on a section applies the
+// override to that section only. The fixture puts the same prose
+// under two sections; only the section with the stricter override
+// emits a diagnostic.
+func TestCheck_InlineSchema_PerScopeRuleOverride(t *testing.T) {
+	r := &Rule{InlineSchema: inlineSchema(t, map[string]any{
+		"sections": []any{
+			map[string]any{
+				"heading": "Loose",
+			},
+			map[string]any{
+				"heading": "Strict",
+				"rules": map[string]any{
+					"line-length": map[string]any{
+						"max":     20,
+						"stern":   true,
+						"exclude": []any{},
+					},
+				},
+			},
+		},
+	})}
+	// Same long line in both sections; only the Strict scope should fire.
+	src := "# Doc\n\n" +
+		"## Loose\n\n" +
+		"This line is well over twenty chars but the loose scope tolerates it.\n\n" +
+		"## Strict\n\n" +
+		"This line is well over twenty chars but the strict scope rejects it.\n"
+	f := newTestFile(t, "doc.md", src)
+	diags := r.Check(f)
+	// We expect exactly one line-length diagnostic, scoped to the Strict section.
+	var lineLength []lint.Diagnostic
+	for _, d := range diags {
+		if d.RuleID == "MDS001" {
+			lineLength = append(lineLength, d)
+		}
+	}
+	require.Len(t, lineLength, 1,
+		"expected one line-length diagnostic from the Strict scope override")
+	// The diagnostic must point at a line inside the Strict section
+	// (line 7 of the source has the offending content).
+	assert.GreaterOrEqual(t, lineLength[0].Line, 7,
+		"diagnostic should land inside the Strict scope (line %d)", lineLength[0].Line)
+}

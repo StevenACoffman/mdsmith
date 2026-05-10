@@ -11,17 +11,23 @@ schema.
 
 ## Settings
 
-| Setting        | Type   | Default | Description                                                                                                                |
-|----------------|--------|---------|----------------------------------------------------------------------------------------------------------------------------|
-| `schema`       | string | `""`    | Path to a schema file                                                                                                      |
-| `placeholders` | list   | `[]`    | Placeholder tokens to treat as opaque; see [placeholder grammar](../../../docs/background/concepts/placeholder-grammar.md) |
+| Setting         | Type   | Default | Description                                                                                                                |
+|-----------------|--------|---------|----------------------------------------------------------------------------------------------------------------------------|
+| `schema`        | string | `""`    | Path to a schema file (a `proto.md`)                                                                                       |
+| `inline-schema` | map    | `{}`    | Inline schema (set by `kinds.<name>.schema:`; not usually written by hand on a rule)                                       |
+| `placeholders`  | list   | `[]`    | Placeholder tokens to treat as opaque; see [placeholder grammar](../../../docs/background/concepts/placeholder-grammar.md) |
 
 Useful tokens: `cue-frontmatter`.
 
-When `schema` is empty the rule skips structure and
-front matter validation, but still warns on misplaced
-`<?require?>` directives. Use overrides or `kinds:` to
-apply schemas to specific file groups.
+When neither `schema` nor `inline-schema` is set the
+rule skips structure and front matter validation, but
+still warns on misplaced `<?require?>` directives. Use
+overrides or `kinds:` to apply schemas to specific file
+groups.
+
+A kind may declare its schema in either form. The
+config loader rejects a kind that sets both — see
+[file kinds](../../../docs/guides/file-kinds.md).
 
 Schema front matter may embed a CUE schema that
 validates document front matter:
@@ -86,6 +92,61 @@ Schema body controls section strictness:
 - Add a heading with text `...` (for example `## ...`) to
   allow extra headings in that position until the next
   required heading anchor.
+
+### Inline schemas on kinds
+
+A kind body may declare its schema directly in
+`.mdsmith.yml` rather than referencing a `proto.md`
+file. The two forms are equivalent — both parse to the
+same in-memory scope tree — and a kind may use only one.
+
+```yaml
+kinds:
+  rfc:
+    schema:
+      frontmatter:
+        id: '=~"^RFC-[0-9]{4}$"'
+        status: '"draft" | "ratified" | "deprecated"'
+        authors: '[...string] & len(authors) >= 1'
+      require:
+        filename: "RFC-[0-9][0-9][0-9][0-9].md"
+      closed: true
+      sections:
+        - heading: "Overview"
+          required: true
+        - heading: "Decision"
+          required: true
+          sections:
+            - heading: "Outcome"
+              required: true
+        - "..."
+        - heading: "References"
+          required: true
+```
+
+Section keys:
+
+- `heading:` — heading text. The level comes from depth
+  in the tree (root sections are H2; nested sections are
+  H3, then H4, …).
+- `required:` — defaults to `true`.
+- `aliases:` — alternate heading texts that match the
+  scope.
+- `sections:` — nested sections one level deeper.
+- `closed:` — when `true`, unlisted headings inside this
+  scope produce a diagnostic. Default `false`.
+- `rules:` — per-scope rule-config overrides. Each entry
+  maps a rule name to a settings map that deep-merges
+  over the rule's defaults inside the scope's subtree.
+
+A bare `"..."` entry is a positional wildcard slot.
+It tolerates unlisted sections at that position even
+under `closed: true`. Listed sections on either side
+still keep their order.
+
+The document's H1 is reserved for the title and is
+validated by `first-line-heading`; inline schemas
+constrain H2 and below.
 
 ## Config
 

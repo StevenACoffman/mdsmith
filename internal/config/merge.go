@@ -158,6 +158,7 @@ func copyKinds(kinds map[string]KindBody) map[string]KindBody {
 		result[name] = KindBody{
 			Rules:      rules,
 			Categories: copyCategories(body.Categories),
+			Schema:     cloneSettings(body.Schema),
 		}
 	}
 	return result
@@ -357,18 +358,98 @@ func effectiveRules(cfg *Config, filePath string, kinds []string) map[string]Rul
 		if !ok {
 			continue
 		}
+		// When a kind sets either schema source, treat it as a
+		// fresh schema declaration: clear any prior schema state
+		// on required-structure so the last source wins
+		// unambiguously across mixed kinds.
+		if kindDeclaresSchema(body) {
+			clearSchemaState(result)
+		}
+		if body.Schema != nil {
+			applyInlineSchema(result, body.Schema)
+		}
 		for k, v := range body.Rules {
 			apply(k, v)
 		}
 	}
 	for _, o := range cfg.Overrides {
 		if matchesAny(o.Patterns(), filePath) {
+			if overrideDeclaresSchema(o) {
+				clearSchemaState(result)
+			}
 			for k, v := range o.Rules {
 				apply(k, v)
 			}
 		}
 	}
 	return result
+}
+
+// kindDeclaresSchema reports whether a kind body declares a schema
+// source — either inline (KindBody.Schema) or via the legacy
+// rules.required-structure.schema: path.
+func kindDeclaresSchema(body KindBody) bool {
+	if body.Schema != nil {
+		return true
+	}
+	rs, ok := body.Rules["required-structure"]
+	if !ok {
+		return false
+	}
+	v, ok := rs.Settings["schema"]
+	if !ok {
+		return false
+	}
+	s, ok := v.(string)
+	return ok && s != ""
+}
+
+// overrideDeclaresSchema reports whether a glob override sets a
+// schema source on required-structure.
+func overrideDeclaresSchema(o Override) bool {
+	rs, ok := o.Rules["required-structure"]
+	if !ok {
+		return false
+	}
+	v, ok := rs.Settings["schema"]
+	if !ok {
+		return false
+	}
+	s, ok := v.(string)
+	return ok && s != ""
+}
+
+// clearSchemaState removes any prior schema source from the
+// accumulated effective config for required-structure. Both the
+// inline-schema map and the file-schema path are cleared so the
+// incoming layer can install its own source unambiguously.
+func clearSchemaState(result map[string]RuleCfg) {
+	rs, ok := result["required-structure"]
+	if !ok {
+		return
+	}
+	if rs.Settings == nil {
+		return
+	}
+	delete(rs.Settings, "schema")
+	delete(rs.Settings, "inline-schema")
+	result["required-structure"] = rs
+}
+
+// applyInlineSchema installs an inline schema (a YAML map) as the
+// `inline-schema` setting on required-structure, creating the rule
+// entry if missing.
+func applyInlineSchema(result map[string]RuleCfg, schema map[string]any) {
+	rs, ok := result["required-structure"]
+	if !ok {
+		rs = RuleCfg{Enabled: true}
+	}
+	if rs.Settings == nil {
+		rs.Settings = map[string]any{}
+	}
+	rs.Settings["inline-schema"] = cloneSettings(schema)
+	rs.Enabled = true
+	result["required-structure"] = rs
 }
 
 func effectiveExplicit(cfg *Config, filePath string, kinds []string) map[string]bool {

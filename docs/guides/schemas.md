@@ -1,0 +1,198 @@
+---
+title: Schemas
+summary: >-
+  Declare a document-structure schema inline on a kind
+  or in a proto.md file, validate headings and front
+  matter, and tighten rule config per section.
+---
+# Schemas
+
+A **schema** describes what a Markdown document's
+front matter, filename, and heading tree must look
+like. Schemas are the engine behind
+[MDS020 required-structure](../../internal/rules/MDS020-required-structure/README.md);
+they are the canonical place to lock down the shape
+of a recurring document type (plan, RFC, runbook,
+rule README).
+
+mdsmith reads schemas from two sources that share one
+in-memory representation:
+
+- **Inline** — a `schema:` block on a kind body in
+  `.mdsmith.yml`.
+- **File** — a `proto.md` referenced by
+  `rules.required-structure.schema:`.
+
+A kind may use only one source; setting both is a
+config error.
+
+## Inline schemas on kinds
+
+Inline schemas keep the structure declaration next to
+the kind's other rule settings. They are best for
+small schemas (one or two screens) that do not need
+templated body content.
+
+```yaml
+kinds:
+  rfc:
+    schema:
+      frontmatter:
+        id: '=~"^RFC-[0-9]{4}$"'
+        status: '"draft" | "ratified" | "deprecated"'
+        authors: '[...string] & len(authors) >= 1'
+      require:
+        filename: "RFC-[0-9][0-9][0-9][0-9].md"
+      closed: true
+      sections:
+        - heading: "Overview"
+          required: true
+        - heading: "Decision"
+          required: true
+        - "..."
+        - heading: "References"
+          required: true
+```
+
+The `frontmatter:` mapping reuses CUE expressions per
+key: regex, disjunction, list, and any other CUE form
+is accepted. Trailing `?` on a key marks it optional.
+
+`require.filename:` is a glob the document basename
+must match.
+
+`closed: true` makes the scope strict — unlisted
+headings produce a diagnostic. `closed: false` (the
+default) tolerates unlisted headings between listed
+sections.
+
+The `"..."` bare-string entry is a wildcard slot: it
+tolerates any unlisted sections at its position even
+under `closed: true`, while enforcing surrounding
+listed sections' order.
+
+### Nested sections
+
+Levels come from depth. Root `sections:` entries are
+H2; nested `sections:` lists are H3, H4, …. A runbook
+that wants Diagnosis → Step (repeatable) → Check /
+Expected expresses that as:
+
+```yaml
+sections:
+  - heading: "Symptoms"
+    required: true
+    aliases: ["Indicators"]
+  - heading: "Diagnosis"
+    required: true
+    sections:
+      - heading: "Step"
+        required: true
+        sections:
+          - heading: "Check"
+            required: true
+          - heading: "Expected"
+            required: true
+          - heading: "If different"
+            required: false
+  - heading: "References"
+    required: false
+```
+
+`aliases:` lets a heading match alternate texts. A
+required scope that lists `aliases: ["Indicators"]`
+matches both `## Symptoms` and `## Indicators` in a
+document.
+
+### Per-scope rule overrides
+
+Any scope may carry a `rules:` block. The override
+deep-merges with the rule's defaults and applies only
+inside that scope's heading range. This is the way to
+say "this section is stricter than the rest of the
+document" without scattering glob overrides.
+
+```yaml
+sections:
+  - heading: "Decision"
+    required: true
+    rules:
+      paragraph-readability:
+        max-index: 12.0
+      max-section-length:
+        max-words: 200
+```
+
+The same rule may have a per-file config (set by a
+top-level `rules:` entry, a kind, or an override) and
+a per-scope config; the scope wins inside its subtree
+and yields to the per-file config outside it.
+
+## File-based schemas (`proto.md`)
+
+A `proto.md` schema is a Markdown file whose headings
+describe required structure and whose front matter
+holds CUE constraints. This form is best for larger
+schemas, schemas that want to template a body, or
+schemas reused across kinds via `<?include?>`.
+
+```markdown
+---
+id: '=~"^MDS[0-9]{3}$"'
+name: 'string & != ""'
+status: '"ready" | "not-ready"'
+---
+<?require
+filename: "MDS*-*.md"
+?>
+
+# {id}: {name}
+
+## Settings
+
+## Examples
+
+### Good
+
+### Bad
+```
+
+The `# ?` (or `# {field}: {field}` form) acts as the
+title placeholder. `## ...` rows mark wildcard slots.
+Front-matter keys map directly to CUE expressions.
+`<?require?>` declares the filename pattern. See
+[enforcing document structure](directives/enforcing-structure.md)
+for the full file-based reference.
+
+## Choosing a source
+
+| Need                                   | Inline | File      |
+|----------------------------------------|--------|-----------|
+| Short schema with no templated body    | yes    | works     |
+| Schema reused via `<?include?>`        | no     | yes       |
+| Frontmatter-body `{field}` sync        | no     | yes       |
+| Nested section tree                    | yes    | flat only |
+| Per-scope rule overrides               | yes    | no        |
+| Stays next to other kind rule settings | yes    | indirect  |
+
+A project can mix sources across kinds — some kinds use
+inline schemas, others use `proto.md` — but a single
+kind must pick one.
+
+## Diagnostics
+
+Schema diagnostics surface through
+[MDS020 required-structure](../../internal/rules/MDS020-required-structure/README.md).
+The message text is the same regardless of source, so
+this is the place to look up what `missing required
+section`, `unexpected section`, `heading level
+mismatch`, and `out of order` mean.
+
+## See also
+
+- [File kinds](file-kinds.md) — how kinds attach
+  schemas (and other rule config) to file groups.
+- [Enforcing document structure with schemas](directives/enforcing-structure.md)
+  — the file-based reference.
+- [Placeholder grammar](../background/concepts/placeholder-grammar.md)
+  — opt-in tokens for template-friendly source.
