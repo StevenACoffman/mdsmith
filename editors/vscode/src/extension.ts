@@ -19,6 +19,11 @@ import {
   startupErrorMessage
 } from "./wiring";
 import { resolveBinary } from "./binary";
+import { runFixWorkspace } from "./commands/fix-workspace";
+import { runInit } from "./commands/init";
+import { runMergeDriverInstall } from "./commands/merge-driver";
+import { runKindsResolve, runKindsWhy, makeKindsContentProvider } from "./commands/kinds";
+import { KINDS_SCHEME, parseKindsUri } from "./commands/virtual-doc";
 
 let client: LanguageClient | undefined;
 // Track the .mdsmith.yml file watcher across the activate /
@@ -37,6 +42,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("mdsmith.restartServer", () => restartServer(context)),
     vscode.commands.registerCommand("mdsmith.showOutput", () => showOutput())
   );
+
+  registerPaletteCommands(context);
 
   // Wire fix-on-save once. The handler reads the setting on every
   // save so toggling the option does not require a restart.
@@ -92,7 +99,10 @@ async function startServer(context: vscode.ExtensionContext): Promise<void> {
   disposeConfigWatcher();
   configWatcher = vscode.workspace.createFileSystemWatcher("**/.mdsmith.yml");
   context.subscriptions.push(configWatcher);
-  const clientOptions: LanguageClientOptions = buildClientOptions(configWatcher);
+  const clientOptions: LanguageClientOptions = buildClientOptions(
+    configWatcher,
+    getOutputChannel()
+  );
   // Replace the default ErrorHandler (DoNotRestart after 5 close
   // events in 3 minutes) with one that gives the user a clear
   // recovery path. We let the client keep restarting up to a
@@ -167,14 +177,11 @@ function disposeConfigWatcher(): void {
   }
 }
 
-// showOutput reveals the "mdsmith" output channel where the
-// language client logs RPC traffic and the server's stderr.
+// showOutput reveals the "mdsmith" output channel. Uses
+// getOutputChannel() so the standalone channel created by palette
+// commands is also reachable when the LSP client is not running.
 function showOutput(): void {
-  // The LanguageClient registers an OutputChannel under
-  // outputChannelName ("mdsmith"). Calling outputChannel.show on
-  // the client's own handle is the safest way to reveal it without
-  // importing internals.
-  client?.outputChannel.show(true);
+  getOutputChannel().show(true);
 }
 
 // MdsmithErrorHandler replaces vscode-languageclient's default
@@ -236,6 +243,243 @@ async function promptRestartAfterRepeatedFailures(): Promise<void> {
   }
 }
 
+// getOutputChannel returns the single "mdsmith" OutputChannel shared
+// between palette commands and the LanguageClient. Created lazily on
+// first use so we don't reserve a channel before anyone needs it; the
+// same instance is passed into LanguageClientOptions.outputChannel so
+// the LSP client doesn't register a second channel with the same name.
+let outputChannel: vscode.OutputChannel | undefined;
+
+function getOutputChannel(): vscode.OutputChannel {
+  if (!outputChannel) {
+    outputChannel = vscode.window.createOutputChannel("mdsmith");
+  }
+  return outputChannel;
+}
+
+// resolveActiveBinary reads `mdsmith.path` at call time so the palette
+// commands pick up config edits without a window reload.
+function resolveActiveBinary(extensionPath: string, scope?: vscode.Uri): string {
+  const cfg = vscode.workspace.getConfiguration("mdsmith", scope);
+  return resolveBinary(cfg.get<string>("path", "mdsmith"), extensionPath);
+}
+
+// registerPaletteCommands wires the five mdsmith.* palette commands and
+// registers the mdsmith-kinds: virtual-document scheme. Called once from
+// activate(). Trust-gated commands use the built-in isWorkspaceTrusted
+// when condition, which VS Code re-evaluates automatically when trust
+// is granted — no onDidGrantWorkspaceTrust subscription is required.
+function registerPaletteCommands(context: vscode.ExtensionContext): void {
+  const getActiveFileUri = (): vscode.Uri | undefined => {
+    const uri = vscode.window.activeTextEditor?.document.uri;
+    return uri?.scheme === "file" ? uri : undefined;
+  };
+  // In multi-root workspaces, prefer the folder containing the active
+  // editor so file-modifying commands operate in the folder the user is
+  // working in. Falls back to the first folder when there is no active
+  // editor or it lives outside any workspace folder.
+  const getWorkspaceRoot = (): string | undefined => {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) return undefined;
+    if (folders.length > 1) {
+      const activeUri = vscode.window.activeTextEditor?.document.uri;
+      if (activeUri) {
+        const folder = vscode.workspace.getWorkspaceFolder(activeUri);
+        if (folder) return folder.uri.fsPath;
+      }
+    }
+    return folders[0].uri.fsPath;
+  };
+  // Scope configuration lookups to the workspace folder being operated on
+  // so per-folder mdsmith.path / mdsmith.config values are respected in
+  // multi-root workspaces. Falls back to the active file URI when no
+  // workspace folder is available (e.g. for the kinds virtual-doc commands).
+  const getConfigScope = (): vscode.Uri | undefined => {
+    const root = getWorkspaceRoot();
+    return root ? vscode.Uri.file(root) : getActiveFileUri();
+  };
+  const getBinary = () => resolveActiveBinary(context.extensionPath, getConfigScope());
+  const getConfigPath = (): string | undefined => {
+    const v = vscode.workspace.getConfiguration("mdsmith", getConfigScope()).get<string>("config", "");
+    return v || undefined;
+  };
+  const isTrusted = () => vscode.workspace.isTrusted;
+
+  const outputDeps = () => ({
+    appendOutput: (text: string) => {
+      const ch = getOutputChannel();
+      ch.append(text);
+    },
+    showOutput: () => getOutputChannel().show(true),
+  });
+
+  // showNotification routes failures (messages containing "failed" or
+  // "could not start") to showWarningMessage so they surface as warnings
+  // rather than appearing informational to the user.
+  const showNotification = (msg: string, ...buttons: string[]): Promise<string | undefined> => {
+    const isFailure = msg.includes("failed") || msg.includes("could not start");
+    return Promise.resolve(
+      isFailure
+        ? vscode.window.showWarningMessage(msg, ...buttons)
+        : vscode.window.showInformationMessage(msg, ...buttons)
+    );
+  };
+
+  const confirmDestructive = (label: string) => async () => {
+    const answer = await vscode.window.showWarningMessage(
+      `Run \`${label}\` in the workspace? This will modify files.`,
+      { modal: true },
+      "Proceed"
+    );
+    return answer === "Proceed";
+  };
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("mdsmith.init", async () => {
+      const od = outputDeps();
+      await runInit({
+        binary: getBinary(),
+        workspaceRoot: getWorkspaceRoot(),
+        isTrusted,
+        showInfo: (msg, ...buttons) =>
+          showNotification(msg, ...buttons),
+        showError: (msg) =>
+          Promise.resolve(vscode.window.showErrorMessage(msg)).then(() => {}),
+        ...od,
+      });
+    }),
+
+    vscode.commands.registerCommand("mdsmith.mergeDriver.install", async () => {
+      const od = outputDeps();
+      await runMergeDriverInstall({
+        binary: getBinary(),
+        workspaceRoot: getWorkspaceRoot(),
+        isTrusted,
+        confirm: confirmDestructive("mdsmith merge-driver install"),
+        showInfo: (msg, ...buttons) =>
+          showNotification(msg, ...buttons),
+        showError: (msg) =>
+          Promise.resolve(vscode.window.showErrorMessage(msg)).then(() => {}),
+        ...od,
+      });
+    }),
+
+    vscode.commands.registerCommand("mdsmith.fixWorkspace", async () => {
+      const od = outputDeps();
+      await runFixWorkspace({
+        binary: getBinary(),
+        workspaceRoot: getWorkspaceRoot(),
+        configPath: getConfigPath(),
+        isTrusted,
+        confirm: confirmDestructive("mdsmith fix ."),
+        showInfo: (msg, ...buttons) =>
+          showNotification(msg, ...buttons),
+        showError: (msg) =>
+          Promise.resolve(vscode.window.showErrorMessage(msg)).then(() => {}),
+        ...od,
+      });
+    }),
+
+    vscode.commands.registerCommand("mdsmith.kinds.resolve", async () => {
+      await runKindsResolve({
+        getActiveFilePath: () => {
+          const editor = vscode.window.activeTextEditor;
+          if (!editor || editor.document.uri.scheme !== "file") return undefined;
+          if (editor.document.languageId !== "markdown") return undefined;
+          return editor.document.uri.fsPath;
+        },
+        getDiagnostics: (filePath) =>
+          vscode.languages.getDiagnostics(vscode.Uri.file(filePath)),
+        openVirtualDoc: async (uri) => {
+          const doc = await vscode.workspace.openTextDocument(
+            vscode.Uri.parse(uri)
+          );
+          const mdDoc = await vscode.languages.setTextDocumentLanguage(doc, "markdown");
+          await vscode.window.showTextDocument(mdDoc, {
+            preview: true,
+            viewColumn: vscode.ViewColumn.Beside,
+          });
+        },
+        showError: (msg) =>
+          Promise.resolve(vscode.window.showErrorMessage(msg)).then(() => {}),
+      });
+    }),
+
+    vscode.commands.registerCommand("mdsmith.kinds.why", async () => {
+      await runKindsWhy({
+        getActiveFilePath: () => {
+          const editor = vscode.window.activeTextEditor;
+          if (!editor || editor.document.uri.scheme !== "file") return undefined;
+          if (editor.document.languageId !== "markdown") return undefined;
+          return editor.document.uri.fsPath;
+        },
+        getDiagnostics: (filePath) =>
+          vscode.languages.getDiagnostics(vscode.Uri.file(filePath)),
+        pickRule: async (rules) => {
+          const items =
+            rules.length > 0
+              ? rules
+              : await vscode.window.showInputBox({
+                  prompt: "No active diagnostics. Enter a rule ID (e.g. MDS001)",
+                  placeHolder: "MDS001",
+                }).then((v) => (v ? [v] : []));
+          if (!items || items.length === 0) return undefined;
+          if (items.length === 1) return items[0];
+          return vscode.window.showQuickPick(items, {
+            placeHolder: "Pick a rule to explain",
+          });
+        },
+        openVirtualDoc: async (uri) => {
+          const doc = await vscode.workspace.openTextDocument(
+            vscode.Uri.parse(uri)
+          );
+          const mdDoc = await vscode.languages.setTextDocumentLanguage(doc, "markdown");
+          await vscode.window.showTextDocument(mdDoc, {
+            preview: true,
+            viewColumn: vscode.ViewColumn.Beside,
+          });
+        },
+        showError: (msg) =>
+          Promise.resolve(vscode.window.showErrorMessage(msg)).then(() => {}),
+      });
+    }),
+
+    // Register the virtual document provider for the mdsmith-kinds: scheme.
+    vscode.workspace.registerTextDocumentContentProvider(
+      KINDS_SCHEME,
+      {
+        provideTextDocumentContent: (uri: vscode.Uri) => {
+          const uriStr = uri.toString();
+          const parsed = parseKindsUri(uriStr);
+          // Derive the workspace folder from the file encoded in the URI so
+          // binary/config lookups use the correct per-folder settings even
+          // when the active editor is the virtual doc itself.
+          const fileFolder = parsed
+            ? vscode.workspace.getWorkspaceFolder(vscode.Uri.file(parsed.file))
+            : undefined;
+          // When workspace folders are open, reject files outside the workspace
+          // to prevent crafted URIs from analyzing arbitrary paths on disk.
+          const folders = vscode.workspace.workspaceFolders;
+          if (parsed && folders && folders.length > 0 && !fileFolder) {
+            return Promise.resolve(
+              `**mdsmith: file is outside the workspace**\n\n\`\`\`\n${parsed.file}\n\`\`\``
+            );
+          }
+          const binaryScope = fileFolder?.uri ?? getActiveFileUri();
+          const binary = resolveActiveBinary(context.extensionPath, binaryScope);
+          const provider = makeKindsContentProvider(binary, fileFolder?.uri.fsPath);
+          return provider.provideTextDocumentContent(uriStr);
+        },
+      }
+    ),
+
+    // VS Code automatically re-evaluates the built-in `isWorkspaceTrusted`
+    // context when trust is granted, so menu entries gated with
+    // `when: isWorkspaceTrusted` appear without a reload — no explicit
+    // handler needed here.
+  );
+}
+
 export async function deactivate(): Promise<void> {
   if (client) {
     try {
@@ -255,4 +499,11 @@ export async function deactivate(): Promise<void> {
   // tight and configWatcher does not survive into a subsequent
   // activation.
   disposeConfigWatcher();
+  // Dispose the shared output channel. context.subscriptions is
+  // flushed after deactivate returns, so dispose explicitly here
+  // for tight ordering.
+  if (outputChannel) {
+    outputChannel.dispose();
+    outputChannel = undefined;
+  }
 }

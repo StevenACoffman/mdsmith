@@ -26,8 +26,25 @@
   },
   "main": "./dist/extension.js",
   "activationEvents": [
-    "onLanguage:markdown"
+    "onLanguage:markdown",
+    "onCommand:mdsmith.restartServer",
+    "onCommand:mdsmith.showOutput",
+    "onCommand:mdsmith.init",
+    "onCommand:mdsmith.mergeDriver.install",
+    "onCommand:mdsmith.fixWorkspace",
+    "onCommand:mdsmith.kinds.why",
+    "onCommand:mdsmith.kinds.resolve"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Diagnostics work in restricted mode. Commands that modify files outside the editor are disabled until the workspace is trusted.",
+      "restrictedConfigurations": [
+        "mdsmith.path",
+        "mdsmith.config"
+      ]
+    }
+  },
   "contributes": {
     "commands": [
       {
@@ -39,8 +56,57 @@
         "command": "mdsmith.showOutput",
         "title": "Show Output Channel",
         "category": "mdsmith"
+      },
+      {
+        "command": "mdsmith.init",
+        "title": "Initialize Config",
+        "category": "mdsmith"
+      },
+      {
+        "command": "mdsmith.mergeDriver.install",
+        "title": "Install Git Merge Driver",
+        "category": "mdsmith"
+      },
+      {
+        "command": "mdsmith.fixWorkspace",
+        "title": "Fix All Markdown",
+        "category": "mdsmith"
+      },
+      {
+        "command": "mdsmith.kinds.why",
+        "title": "Explain Rule on This File",
+        "category": "mdsmith"
+      },
+      {
+        "command": "mdsmith.kinds.resolve",
+        "title": "Show Resolved Config",
+        "category": "mdsmith"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "mdsmith.init",
+          "when": "isWorkspaceTrusted"
+        },
+        {
+          "command": "mdsmith.mergeDriver.install",
+          "when": "isWorkspaceTrusted"
+        },
+        {
+          "command": "mdsmith.fixWorkspace",
+          "when": "isWorkspaceTrusted"
+        },
+        {
+          "command": "mdsmith.kinds.why",
+          "when": "editorLangId == markdown && resourceScheme == file"
+        },
+        {
+          "command": "mdsmith.kinds.resolve",
+          "when": "editorLangId == markdown && resourceScheme == file"
+        }
+      ]
+    },
     "configuration": {
       "title": "mdsmith",
       "properties": {

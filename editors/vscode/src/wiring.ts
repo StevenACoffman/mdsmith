@@ -40,10 +40,25 @@ export function buildServerOptions(
   };
 }
 
+// OutputChannelLike captures the OutputChannel methods that
+// vscode-languageclient calls when LanguageClientOptions.outputChannel
+// is set. Defined structurally so wiring.ts stays decoupled from the
+// `vscode` runtime package while still rejecting unrelated objects.
+export interface OutputChannelLike {
+  readonly name: string;
+  append(value: string): void;
+  appendLine(value: string): void;
+  clear(): void;
+  show(preserveFocus?: boolean): void;
+  hide(): void;
+  dispose(): void;
+}
+
 export function buildClientOptions(
-  configWatcher: FileSystemWatcherLike
+  configWatcher: FileSystemWatcherLike,
+  outputChannel?: OutputChannelLike
 ): LanguageClientOptions {
-  return {
+  const opts: LanguageClientOptions = {
     documentSelector: [
       { scheme: "file", language: "markdown" }
     ],
@@ -51,9 +66,18 @@ export function buildClientOptions(
       // Cast: LanguageClientOptions wants the full vscode interface,
       // but at runtime only the shape we expose matters.
       fileEvents: configWatcher as never
-    },
-    outputChannelName: "mdsmith"
+    }
   };
+  if (outputChannel) {
+    // Sharing one OutputChannel between palette commands and the LSP
+    // client avoids two channels with the same name once the client
+    // starts. Cast through never because LanguageClientOptions wants
+    // the real vscode.OutputChannel type which we don't import here.
+    opts.outputChannel = outputChannel as never;
+  } else {
+    opts.outputChannelName = "mdsmith";
+  }
+  return opts;
 }
 
 export function startupErrorMessage(err: unknown): string {
