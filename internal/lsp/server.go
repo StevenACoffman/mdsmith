@@ -60,6 +60,12 @@ type Server struct {
 	idxMu sync.Mutex
 	idx   *index.Index
 
+	// diagsMu guards diags, the per-URI cache of the last published
+	// LSP diagnostics. Hover uses this to answer diagnostic-first
+	// requests without re-running lint.
+	diagsMu sync.RWMutex
+	diags   map[string][]Diagnostic
+
 	nextReqID        atomic.Int64
 	shutdown         atomic.Bool // we are tearing down (any cause)
 	shutdownReceived atomic.Bool // client sent a `shutdown` request
@@ -141,6 +147,7 @@ func New(opts Options) *Server {
 		settings:       userSettings{Run: runOnSave},
 		pending:        make(map[string]*time.Timer),
 		pendingResp:    make(map[string]chan rpcResponse),
+		diags:          make(map[string][]Diagnostic),
 	}
 }
 
@@ -316,6 +323,8 @@ func (s *Server) dispatchDocument(ctx context.Context, msg *requestMessage) bool
 		s.handleDidClose(msg.Params)
 	case "textDocument/codeAction":
 		s.handleCodeAction(msg)
+	case "textDocument/hover":
+		s.handleHover(msg)
 	default:
 		return false
 	}
@@ -396,6 +405,7 @@ func (s *Server) handleInitialize(msg *requestMessage) {
 			CodeActionProvider: codeActionOptions{
 				CodeActionKinds: []string{kindQuickFix, kindSourceFixAll},
 			},
+			HoverProvider:           true,
 			DocumentSymbolProvider:  true,
 			DefinitionProvider:      true,
 			ImplementationProvider:  true,
@@ -498,8 +508,17 @@ func (s *Server) handleDidClose(raw json.RawMessage) {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return
 	}
-	doc, _ := s.docs.get(p.TextDocument.URI)
-	s.docs.delete(p.TextDocument.URI)
+	uri := p.TextDocument.URI
+	doc, _ := s.docs.get(uri)
+	s.docs.delete(uri)
+	// Cancel any armed debounce timer so a pending runLint cannot fire
+	// and re-publish diagnostics after we clear them below.
+	s.pendingMu.Lock()
+	if timer, ok := s.pending[uri]; ok {
+		timer.Stop()
+		delete(s.pending, uri)
+	}
+	s.pendingMu.Unlock()
 	// Refresh the index from on-disk content so the closed buffer's
 	// last-saved state replaces the editor-only edits we accumulated.
 	// When the file no longer exists on disk we silently skip — the
@@ -507,9 +526,12 @@ func (s *Server) handleDidClose(raw json.RawMessage) {
 	if doc != nil {
 		s.indexReloadFromDisk(doc.path)
 	}
-	// Clear diagnostics so VS Code stops showing stale squiggles.
+	// Clear cached diagnostics and squiggles on close.
+	s.diagsMu.Lock()
+	delete(s.diags, uri)
+	s.diagsMu.Unlock()
 	_ = s.t.writeNotification("textDocument/publishDiagnostics",
-		publishDiagnosticsParams{URI: p.TextDocument.URI, Diagnostics: []Diagnostic{}})
+		publishDiagnosticsParams{URI: uri, Diagnostics: []Diagnostic{}})
 }
 
 func (s *Server) handleDidChangeWatchedFiles(ctx context.Context, raw json.RawMessage) {
@@ -708,6 +730,9 @@ func (s *Server) runLint(uri string) {
 	}
 	relPath := workspaceRelative(root, doc.path)
 	if config.IsIgnored(cfg.Ignore, relPath) {
+		s.diagsMu.Lock()
+		s.diags[uri] = nil
+		s.diagsMu.Unlock()
 		_ = s.t.writeNotification("textDocument/publishDiagnostics",
 			publishDiagnosticsParams{URI: uri, Version: doc.version, Diagnostics: []Diagnostic{}})
 		return
@@ -738,6 +763,11 @@ func (s *Server) runLint(uri string) {
 	if s.shutdown.Load() {
 		return
 	}
+	// If the document was closed while we were linting, discard results
+	// to avoid re-publishing stale diagnostics over didClose's empty notification.
+	if _, ok := s.docs.get(uri); !ok {
+		return
+	}
 	// Mirror `mdsmith check`: surface lint pipeline errors (parse
 	// failures, oversized buffers, config-target rule errors) to
 	// the editor instead of silently dropping them. Otherwise the
@@ -757,6 +787,11 @@ func (s *Server) runLint(uri string) {
 	docDiags, otherDiags := partitionDocDiagnostics(res.Diagnostics, relPath)
 	s.surfaceForeignDiagnostics(uri, otherDiags)
 	lspDiags := toLSPAll(docDiags, doc.text)
+	// Cache before publishing so hover requests that arrive after the
+	// client observes the notification always find current diagnostics.
+	s.diagsMu.Lock()
+	s.diags[uri] = lspDiags
+	s.diagsMu.Unlock()
 	_ = s.t.writeNotification("textDocument/publishDiagnostics",
 		publishDiagnosticsParams{URI: uri, Version: doc.version, Diagnostics: lspDiags})
 }

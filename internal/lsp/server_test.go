@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -2568,4 +2569,390 @@ func TestDeliverResponseUnknownIDIsNoOp(t *testing.T) {
 	s := New(Options{Reader: nil, Writer: io.Discard})
 	// Must not panic and must not block.
 	s.deliverResponse("999", rpcResponse{})
+}
+
+// --- Hover tests ---
+
+func TestHoverAdvertisedInCapabilities(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	resultRaw, errResp := h.request("initialize", initializeParams{})
+	require.Nil(t, errResp)
+	var res initializeResult
+	require.NoError(t, json.Unmarshal(resultRaw, &res))
+	assert.True(t, res.Capabilities.HoverProvider, "hoverProvider must be true in initialize response")
+}
+
+func TestHoverDiagnosticFirst(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, errResp := h.request("initialize", initializeParams{})
+	require.Nil(t, errResp)
+
+	uri := "file:///workspace/hover_diag.md"
+	// MDS006 fires on line 2 (0-based) due to trailing spaces.
+	text := "# Title\n\ntrailing   \n"
+	h.notify("textDocument/didOpen", didOpenTextDocumentParams{
+		TextDocument: textDocumentItem{
+			URI: uri, LanguageID: "markdown", Version: 1, Text: text,
+		},
+	})
+	// Wait for lint pass to cache diagnostics.
+	raw := h.awaitNotification("textDocument/publishDiagnostics", 5*time.Second)
+	var published publishDiagnosticsParams
+	require.NoError(t, json.Unmarshal(raw, &published))
+	var found bool
+	for _, d := range published.Diagnostics {
+		if d.Code == "MDS006" {
+			found = true
+		}
+	}
+	require.True(t, found, "expected MDS006 in published diagnostics before hover")
+
+	// Hover on the trailing-spaces line, character 9 (first trailing space,
+	// which is inside the MDS006 diagnostic range starting at character 8).
+	resultRaw, hoverErr := h.request("textDocument/hover", hoverParams{
+		TextDocument: textDocumentIdentifier{URI: uri},
+		Position:     Position{Line: 2, Character: 9},
+	})
+	require.Nil(t, hoverErr)
+	require.NotEqual(t, "null", string(resultRaw), "hover over diagnostic must return content")
+
+	var result hoverResult
+	require.NoError(t, json.Unmarshal(resultRaw, &result))
+	assert.Equal(t, "markdown", result.Contents.Kind)
+	assert.Contains(t, result.Contents.Value, "MDS006")
+	assert.NotNil(t, result.Range, "hover over diagnostic must include range")
+}
+
+func TestHoverDirectiveFallback(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, errResp := h.request("initialize", initializeParams{})
+	require.Nil(t, errResp)
+
+	uri := "file:///workspace/hover_directive.md"
+	// A catalog directive with no trailing-space diagnostics.
+	text := "# Title\n\n<?catalog\nglob: \"*.md\"\n?>\n"
+	h.notify("textDocument/didOpen", didOpenTextDocumentParams{
+		TextDocument: textDocumentItem{
+			URI: uri, LanguageID: "markdown", Version: 1, Text: text,
+		},
+	})
+	// Wait for lint pass to complete so the hover handler finds a live doc.
+	_ = h.awaitNotification("textDocument/publishDiagnostics", 5*time.Second)
+
+	// Hover on the glob line (line 3, 0-based) — inside the directive but below
+	// any MDS019 diagnostic range which spans only the opening tag line.
+	resultRaw, hoverErr := h.request("textDocument/hover", hoverParams{
+		TextDocument: textDocumentIdentifier{URI: uri},
+		Position:     Position{Line: 3, Character: 0},
+	})
+	require.Nil(t, hoverErr)
+	require.NotEqual(t, "null", string(resultRaw), "hover inside catalog directive must return content")
+
+	var result hoverResult
+	require.NoError(t, json.Unmarshal(resultRaw, &result))
+	assert.Equal(t, "markdown", result.Contents.Kind)
+	assert.NotEmpty(t, result.Contents.Value)
+	assert.NotNil(t, result.Range)
+}
+
+func TestHoverNoMatch(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, errResp := h.request("initialize", initializeParams{})
+	require.Nil(t, errResp)
+
+	uri := "file:///workspace/hover_nomatch.md"
+	text := "# Title\n\nPlain prose without issues.\n"
+	h.notify("textDocument/didOpen", didOpenTextDocumentParams{
+		TextDocument: textDocumentItem{
+			URI: uri, LanguageID: "markdown", Version: 1, Text: text,
+		},
+	})
+	_ = h.awaitNotification("textDocument/publishDiagnostics", 5*time.Second)
+
+	// Hover on the heading (no diagnostic, no directive).
+	resultRaw, hoverErr := h.request("textDocument/hover", hoverParams{
+		TextDocument: textDocumentIdentifier{URI: uri},
+		Position:     Position{Line: 0, Character: 3},
+	})
+	require.Nil(t, hoverErr)
+	assert.Equal(t, "null", string(resultRaw), "hover on plain prose must return null")
+}
+
+func TestHoverUnknownDocument(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, errResp := h.request("initialize", initializeParams{})
+	require.Nil(t, errResp)
+
+	// Hover on a URI that was never opened.
+	resultRaw, hoverErr := h.request("textDocument/hover", hoverParams{
+		TextDocument: textDocumentIdentifier{URI: "file:///not/open.md"},
+		Position:     Position{Line: 0, Character: 0},
+	})
+	require.Nil(t, hoverErr)
+	assert.Equal(t, "null", string(resultRaw), "hover on unknown document must return null")
+}
+
+func TestPosInRange(t *testing.T) {
+	t.Parallel()
+	r := Range{Start: Position{Line: 2, Character: 5}, End: Position{Line: 2, Character: 10}}
+
+	// Inside the range.
+	assert.True(t, posInRange(Position{2, 5}, r), "start boundary is inside")
+	assert.True(t, posInRange(Position{2, 7}, r), "mid-range")
+	assert.True(t, posInRange(Position{2, 9}, r), "one before end")
+
+	// Outside: end boundary is exclusive.
+	assert.False(t, posInRange(Position{2, 10}, r), "end boundary is exclusive")
+	assert.False(t, posInRange(Position{2, 11}, r), "past end")
+	assert.False(t, posInRange(Position{2, 4}, r), "before start")
+	assert.False(t, posInRange(Position{1, 7}, r), "wrong line before")
+	assert.False(t, posInRange(Position{3, 7}, r), "wrong line after")
+
+	// Empty range (Start == End): nothing is inside.
+	empty := Range{Start: Position{Line: 1, Character: 3}, End: Position{Line: 1, Character: 3}}
+	assert.False(t, posInRange(Position{1, 3}, empty), "position at empty range is outside")
+}
+
+// TestDirectiveDocFor exercises the return-value contract of directiveDocFor:
+// known directives return non-empty content, unknown names return false.
+func TestDirectiveDocFor(t *testing.T) {
+	t.Parallel()
+
+	content, ok := directiveDocFor("catalog")
+	assert.True(t, ok, "catalog should have docs")
+	assert.NotEmpty(t, content, "catalog docs must be non-empty")
+
+	_, ok = directiveDocFor("unknown-directive-xyz")
+	assert.False(t, ok, "unknown directive must return false")
+
+	for _, name := range []string{"include", "build", "allow-empty-section", "require"} {
+		c, found := directiveDocFor(name)
+		assert.True(t, found, "%s should have docs", name)
+		assert.NotEmpty(t, c, "%s docs must be non-empty", name)
+	}
+
+	// toc and ignore have no guide page yet and must return false.
+	for _, name := range []string{"toc", "ignore"} {
+		_, found := directiveDocFor(name)
+		assert.False(t, found, "%s must return false until a guide page exists", name)
+	}
+}
+
+// TestLoadDirectiveDocs_SkipsMissingFile covers the err != nil branch in
+// loadDirectiveDocs: when a referenced guide file is absent from the FS the
+// entry is silently skipped so hover returns null rather than crashing.
+func TestLoadDirectiveDocs_SkipsMissingFile(t *testing.T) {
+	t.Parallel()
+	docs := loadDirectiveDocs(fstest.MapFS{}) // empty FS — all reads fail
+	assert.Empty(t, docs, "missing files must produce an empty map")
+}
+
+// TestLoadDirectiveDocs_DeduplicatesFiles covers the seen-map guard:
+// multiple directives share one guide file, so the file is read only once.
+func TestLoadDirectiveDocs_DeduplicatesFiles(t *testing.T) {
+	t.Parallel()
+	// Provide the real generating-content.md so both catalog and include
+	// resolve to a non-empty entry without touching the other guide files.
+	content := []byte("---\nsummary: test\n---\n# Guide\n")
+	fsys := fstest.MapFS{
+		"generating-content.md":  &fstest.MapFile{Data: content},
+		"build.md":               &fstest.MapFile{Data: content},
+		"enforcing-structure.md": &fstest.MapFile{Data: content},
+	}
+	docs := loadDirectiveDocs(fsys)
+	// Three distinct files should be loaded once each.
+	assert.Len(t, docs, 3)
+}
+
+// TestRuleHoverContentFallback covers the error branch of ruleHoverContent
+// where the rule code is not registered.
+func TestRuleHoverContentFallback(t *testing.T) {
+	t.Parallel()
+	d := Diagnostic{Code: "MDSZZZ", Message: "unknown rule test message"}
+	content := ruleHoverContent(d)
+	assert.Contains(t, content, "MDSZZZ")
+	assert.Contains(t, content, "mdsmith help rule MDSZZZ")
+}
+
+// TestDirectiveHoverAtInRange covers the path where the cursor falls inside a
+// directive block that has registered documentation.
+func TestDirectiveHoverAtInRange(t *testing.T) {
+	t.Parallel()
+	src := []byte("# Title\n\n<?catalog\nglob: \"*.md\"\n?>\n")
+
+	result := directiveHoverAt(src, Position{Line: 3, Character: 0})
+	require.NotNil(t, result, "cursor inside documented directive must return a hover result")
+	assert.Equal(t, "markdown", result.Contents.Kind)
+	assert.NotEmpty(t, result.Contents.Value)
+	assert.NotNil(t, result.Range)
+	assert.Equal(t, 2, result.Range.Start.Line, "range must start at the opening tag line")
+}
+
+// TestDirectiveHoverAtOutOfRange covers the path where the cursor is above
+// any directive block (the posInRange guard returns false for all PIs).
+func TestDirectiveHoverAtOutOfRange(t *testing.T) {
+	t.Parallel()
+	src := []byte("# Title\n\n<?catalog\nglob: \"*.md\"\n?>\n")
+
+	result := directiveHoverAt(src, Position{Line: 0, Character: 0})
+	assert.Nil(t, result, "cursor above directive must return nil")
+}
+
+// TestDirectiveHoverAtUnknownDirective covers the WalkStop branch inside
+// directiveHoverAt when the cursor is within a directive that has no docs.
+func TestDirectiveHoverAtUnknownDirective(t *testing.T) {
+	t.Parallel()
+	src := []byte("# Title\n\n<?unknown-xyz\narg: val\n?>\n")
+
+	result := directiveHoverAt(src, Position{Line: 2, Character: 3})
+	assert.Nil(t, result, "cursor inside undocumented directive must return nil")
+}
+
+// TestDirectiveHoverAtBeforeIndent covers the startChar guard: a cursor to the
+// left of the <? column (in the indentation) must not return hover content.
+func TestDirectiveHoverAtBeforeIndent(t *testing.T) {
+	t.Parallel()
+	// Two leading spaces — <?catalog is at column 2.
+	src := []byte("# Title\n\n  <?catalog\nglob: \"*.md\"\n?>\n")
+
+	// Cursor at column 0 on the opening line — before the <? column.
+	result := directiveHoverAt(src, Position{Line: 2, Character: 0})
+	assert.Nil(t, result, "cursor before <? indent must return nil")
+
+	// Cursor at column 2 — exactly at <?.
+	result = directiveHoverAt(src, Position{Line: 2, Character: 2})
+	require.NotNil(t, result, "cursor at <? column must return hover result")
+	assert.Equal(t, 2, result.Range.Start.Character, "range start character must equal indent")
+}
+
+// TestDirectiveHoverAtSingleLinePI covers the single-line PI span check:
+// hovering inside the directive returns docs; hovering after ?> returns nil.
+// The returned range End.Character must end at the ?> position, not end-of-line.
+func TestDirectiveHoverAtSingleLinePI(t *testing.T) {
+	t.Parallel()
+	// Single-line catalog directive followed by trailing prose on the same line.
+	// (toc and ignore have no guide page and are not in directiveToDocFile.)
+	// <?catalog glob:"*"?> is 20 UTF-16 code units (all ASCII).
+	src := []byte("# Title\n\n<?catalog glob:\"*\"?> trailing text\n")
+
+	// Cursor inside the PI span (character 3, within <?catalog glob:"*"?>).
+	result := directiveHoverAt(src, Position{Line: 2, Character: 3})
+	require.NotNil(t, result, "cursor inside single-line PI must return hover result")
+	require.NotNil(t, result.Range, "hover result must include a range")
+	assert.Equal(t, Position{Line: 2, Character: 0}, result.Range.Start)
+	// End must be the ?> close (character 20), not end-of-line.
+	assert.Equal(t, Position{Line: 2, Character: 20}, result.Range.End)
+
+	// Cursor after ?> (character 22, in trailing prose).
+	result = directiveHoverAt(src, Position{Line: 2, Character: 22})
+	assert.Nil(t, result, "cursor after ?> in single-line PI must return nil")
+}
+
+// TestDirectiveHoverAtNoClosurePI covers the else branch of HasClosure():
+// when a PI has no closing ?>, endLine is computed from the last content line.
+func TestDirectiveHoverAtNoClosurePI(t *testing.T) {
+	t.Parallel()
+	// No closing ?> — HasClosure() is false; endLine is the last content line.
+	src := []byte("# Title\n\n<?catalog\nglob: \"*.md\"\n")
+
+	result := directiveHoverAt(src, Position{Line: 3, Character: 0})
+	require.NotNil(t, result, "cursor inside unclosed catalog PI must return a hover result")
+	assert.Equal(t, "markdown", result.Contents.Kind)
+	assert.NotEmpty(t, result.Contents.Value)
+}
+
+// TestHoverInvalidParams covers the json.Unmarshal error branch in handleHover
+// by sending a non-object params value that cannot be decoded into hoverParams.
+func TestHoverInvalidParams(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, errResp := h.request("initialize", initializeParams{})
+	require.Nil(t, errResp)
+
+	_, errResp = h.request("textDocument/hover", json.RawMessage("true"))
+	require.NotNil(t, errResp, "invalid params must return an error response")
+	assert.Equal(t, codeInvalidParams, errResp.Code)
+}
+
+// TestHoverSkipsEmptyCodeDiagnostic covers the d.Code == "" guard in
+// handleHover: a diagnostic with an empty code must be skipped even when
+// the cursor falls inside its range.
+func TestHoverSkipsEmptyCodeDiagnostic(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, errResp := h.request("initialize", initializeParams{})
+	require.Nil(t, errResp)
+
+	uri := "file:///workspace/hover_empty_code.md"
+	text := "# Title\n\nsome prose\n"
+	h.notify("textDocument/didOpen", didOpenTextDocumentParams{
+		TextDocument: textDocumentItem{
+			URI: uri, LanguageID: "markdown", Version: 1, Text: text,
+		},
+	})
+	_ = h.awaitNotification("textDocument/publishDiagnostics", 5*time.Second)
+
+	// Inject a diagnostic with an empty code spanning line 2.
+	h.srv.diagsMu.Lock()
+	h.srv.diags[uri] = []Diagnostic{{
+		Range:   Range{Start: Position{Line: 2, Character: 0}, End: Position{Line: 2, Character: 10}},
+		Code:    "",
+		Message: "no-code diagnostic",
+	}}
+	h.srv.diagsMu.Unlock()
+
+	// Hover inside the empty-code diagnostic range; the diagnostic is skipped
+	// and the result falls through to null (no directive at that position).
+	resultRaw, hoverErr := h.request("textDocument/hover", hoverParams{
+		TextDocument: textDocumentIdentifier{URI: uri},
+		Position:     Position{Line: 2, Character: 5},
+	})
+	require.Nil(t, hoverErr)
+	assert.Equal(t, "null", string(resultRaw), "empty-code diagnostic must not produce hover content")
+}
+
+// TestHandleDidClose_CancelsPendingLint verifies that handleDidClose cancels
+// any armed debounce timer so a pending runLint cannot fire and re-publish
+// diagnostics after the document has been removed and cleared.
+func TestHandleDidClose_CancelsPendingLint(t *testing.T) {
+	t.Parallel()
+	// Use a long debounce so the didChange timer does not fire during the test.
+	h := newDebouncedHarness(t, 10*time.Second)
+	_, errResp := h.request("initialize", initializeParams{})
+	require.Nil(t, errResp)
+
+	uri := "file:///close-race.md"
+	h.notify("textDocument/didOpen", didOpenTextDocumentParams{
+		TextDocument: textDocumentItem{URI: uri, LanguageID: "markdown", Version: 1, Text: "# Hello\n"},
+	})
+	// Drain the immediate open-triggered lint notification.
+	_ = h.awaitNotification("textDocument/publishDiagnostics", 5*time.Second)
+
+	// Send a change — this arms a 10-second debounce timer.
+	h.notify("textDocument/didChange", didChangeTextDocumentParams{
+		TextDocument:   versionedTextDocumentIdentifier{URI: uri, Version: 2},
+		ContentChanges: []textDocumentContentChangeEvent{{Text: "# Changed\n"}},
+	})
+
+	// Close the document — must cancel the pending timer.
+	h.notify("textDocument/didClose", didCloseTextDocumentParams{
+		TextDocument: textDocumentIdentifier{URI: uri},
+	})
+
+	// Drain the empty-diagnostics notification published by didClose.
+	raw := h.awaitNotification("textDocument/publishDiagnostics", 5*time.Second)
+	var closed publishDiagnosticsParams
+	require.NoError(t, json.Unmarshal(raw, &closed))
+	assert.Empty(t, closed.Diagnostics, "didClose must publish empty diagnostics")
+
+	// The pending timer must have been cancelled by handleDidClose.
+	h.srv.pendingMu.Lock()
+	_, hasPending := h.srv.pending[uri]
+	h.srv.pendingMu.Unlock()
+	assert.False(t, hasPending, "pending lint timer must be cleared after didClose")
 }
