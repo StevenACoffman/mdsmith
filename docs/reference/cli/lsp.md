@@ -237,13 +237,15 @@ Completion inside fenced or indented code blocks returns an empty list.
 The client pre-fills the popup with the placeholder. `null`
 skips the rename at positions that aren't renameable:
 
-| Cursor on…                                       | Range                          |
-|--------------------------------------------------|--------------------------------|
-| ATX heading text run (excluding `#` markers)     | text between markers           |
-| Setext heading text line                         | the full text line, trimmed    |
-| `[label]: url` def                               | label inside `[…]`             |
-| `[text][label]` use, shortcut, or collapsed `[]` | label inside the leading `[…]` |
-| Anywhere else                                    | `null`                         |
+| Cursor on…                                   | Range                           |
+|----------------------------------------------|---------------------------------|
+| ATX heading text run (excluding `#` markers) | text between markers            |
+| Setext heading text line                     | the full text line, trimmed     |
+| `[label]: url` def                           | label inside `[…]`              |
+| `[text][label]` full ref                     | label inside the trailing `[…]` |
+| Shortcut `[label]` use                       | label inside `[…]`              |
+| Collapsed `[label][]` (or trailing `[]`)     | label inside the leading `[…]`  |
+| Anywhere else                                | `null`                          |
 
 `rename` answers with one `WorkspaceEdit`. Heading rename
 rewrites the heading text. It also rewrites every workspace
@@ -263,7 +265,12 @@ files.
 A rename fails with `InvalidParams` when:
 
 - The renamed heading's bare slug equals another heading's
-  bare slug in the same file.
+  bare slug in the same file *and* the rename would
+  introduce that duplication. A non-semantic edit that
+  preserves the heading's existing base slug
+  (`Setup` → `Setup!`) still passes inside an existing
+  duplicate-name group, since it doesn't add a new
+  collision.
 - The renamed link-ref label normalizes to another
   `[label]: url` def in the same file.
 - The new heading text slugifies to the empty string.
