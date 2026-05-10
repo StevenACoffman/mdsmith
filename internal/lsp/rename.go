@@ -114,9 +114,9 @@ func atxHeadingTextByteRange(row []byte) (int, int, bool) {
 	}
 	end := trimRightSpace(row, textStart, len(row))
 	end = trimTrailingHashRun(row, textStart, end)
-	if end < textStart {
-		end = textStart
-	}
+	// trimTrailingHashRun never erodes past textStart — the bounded
+	// `for k > start` loop and the explicit `k > start` guard before
+	// returning trimRightSpace(row, start, k-1) keep end >= textStart.
 	return textStart, end, true
 }
 
@@ -414,7 +414,10 @@ func (s *Server) handleRename(msg *requestMessage) {
 //
 // Algorithm:
 //  1. Recompute the file's heading slug map under the new heading
-//     text using mdtext.CollectTOCItems.
+//     text. The pass mirrors mdtext.CollectTOCItems' disambiguator
+//     logic via assignSlugs, but walks every heading (including
+//     empty-slug ones CollectTOCItems would skip) so the slug
+//     map stays aligned with the rename's heading walk.
 //  2. Reject the rename when its new bare slug collides with another
 //     heading's bare slug (a *new* duplicate would force the
 //     disambiguator to shift in surprising ways; cross-file links
@@ -660,17 +663,14 @@ func (s *Server) appendAnchorEditsForHeading(
 // of an unrelated stale edge.
 func (s *Server) anchorEditForEdge(e index.Edge, oldSlug, newSlug string) (string, textEdit, bool) {
 	uri := s.workspaceURI(e.SourceFile)
-	if uri == "" {
-		return "", textEdit{}, false
-	}
 	source, _, ok := s.docTextOrFile(uri)
 	if !ok {
+		// Edge points at a file the LSP can no longer read (closed
+		// buffer + on-disk delete, or workspace boundary moved).
+		// Skip rather than fail the whole rename.
 		return "", textEdit{}, false
 	}
 	lines := splitLines(source)
-	if e.SourceLine < 1 || e.SourceLine > len(lines) {
-		return "", textEdit{}, false
-	}
 	row := lines[e.SourceLine-1]
 	startByte, endByte, ok := anchorFragmentBytes(row, e.SourceCol-1, oldSlug)
 	if !ok {

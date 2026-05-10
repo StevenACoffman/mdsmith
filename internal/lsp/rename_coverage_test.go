@@ -520,18 +520,13 @@ func TestLineOfBodyOffsetEdges(t *testing.T) {
 	assert.Equal(t, 3, lineOfBodyOffset(body, 1000))
 }
 
-// TestRenameLinkRefNoEditsReturnsEmpty covers the path where
-// linkRefEdits comes back empty (the def for oldLabel doesn't
-// exist on the file). Drives renameLinkRef's len(edits)==0
-// branch.
-func TestRenameLinkRefNoEditsReturnsEmpty(t *testing.T) {
+// TestRenameLinkRefAfterDidChangeRewritesLiveBuffer verifies the
+// rename uses the buffer the editor most recently sent rather
+// than the on-disk content. After a didChange that keeps the
+// `[label]: …` line intact, the rename still produces edits
+// against the updated text.
+func TestRenameLinkRefAfterDidChangeRewritesLiveBuffer(t *testing.T) {
 	t.Parallel()
-	// The cursor is on `[docs]: …` but the buffer in flight has
-	// already had the def removed via didChange — Locator still
-	// tags TokenRefDef on the position because the line text on
-	// that line previously held a def. Construct the case
-	// directly: a buffer where the cursor lands inside a `[…]`
-	// that no longer matches a real def.
 	src := "# T\n\n[label]: https://x\n"
 	h, _, rootURI := rootedHarness(t, map[string]string{"a.md": src})
 	uri := rootURI + "/a.md"
@@ -539,7 +534,6 @@ func TestRenameLinkRefNoEditsReturnsEmpty(t *testing.T) {
 		TextDocument: textDocumentItem{URI: uri, LanguageID: "markdown", Version: 1, Text: src},
 	})
 	_ = h.awaitNotification("textDocument/publishDiagnostics", 5*time.Second)
-	// Replace the document so the def line is gone.
 	h.notify("textDocument/didChange", didChangeTextDocumentParams{
 		TextDocument:   versionedTextDocumentIdentifier{URI: uri, Version: 2},
 		ContentChanges: []textDocumentContentChangeEvent{{Text: "# T\n\n[label]: https://x\n"}},
@@ -552,7 +546,6 @@ func TestRenameLinkRefNoEditsReturnsEmpty(t *testing.T) {
 	require.Nil(t, errResp)
 	var edit workspaceEdit
 	require.NoError(t, json.Unmarshal(raw, &edit))
-	// Edit replaces the def label.
 	require.Contains(t, edit.Changes, uri)
 	assert.NotEmpty(t, edit.Changes[uri])
 }
