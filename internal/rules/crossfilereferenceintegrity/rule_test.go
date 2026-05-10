@@ -7,8 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	gast "github.com/yuin/goldmark/ast"
-
+	"github.com/jeduden/mdsmith/internal/linkgraph"
 	"github.com/jeduden/mdsmith/internal/lint"
 	"github.com/jeduden/mdsmith/internal/rule"
 
@@ -503,7 +502,7 @@ func TestCheck_InvalidIncludeGlobReturnsConfigDiag(t *testing.T) {
 // =====================================================================
 
 func TestParseTarget_AnchorOnly(t *testing.T) {
-	target, ok := parseTarget("#section")
+	target, ok := linkgraph.ParseTarget("#section")
 	require.True(t, ok)
 	require.Equal(t, "#section", target.Raw)
 	require.Equal(t, "section", target.Anchor)
@@ -512,22 +511,22 @@ func TestParseTarget_AnchorOnly(t *testing.T) {
 }
 
 func TestParseTarget_Empty(t *testing.T) {
-	_, ok := parseTarget("")
+	_, ok := linkgraph.ParseTarget("")
 	require.False(t, ok)
 }
 
 func TestParseTarget_ProtocolRelative(t *testing.T) {
-	_, ok := parseTarget("//example.com/path")
+	_, ok := linkgraph.ParseTarget("//example.com/path")
 	require.False(t, ok)
 }
 
 func TestParseTarget_AbsoluteURL(t *testing.T) {
-	_, ok := parseTarget("https://example.com/path")
+	_, ok := linkgraph.ParseTarget("https://example.com/path")
 	require.False(t, ok)
 }
 
 func TestParseTarget_PathWithAnchor(t *testing.T) {
-	target, ok := parseTarget("guide.md#intro")
+	target, ok := linkgraph.ParseTarget("guide.md#intro")
 	require.True(t, ok)
 	require.Equal(t, "guide.md", target.Path)
 	require.Equal(t, "intro", target.Anchor)
@@ -535,7 +534,7 @@ func TestParseTarget_PathWithAnchor(t *testing.T) {
 }
 
 func TestParseTarget_EncodedPath(t *testing.T) {
-	target, ok := parseTarget("my%20file.md")
+	target, ok := linkgraph.ParseTarget("my%20file.md")
 	require.True(t, ok)
 	// url.Parse decodes percent-encoded characters in the path.
 	require.Equal(t, "my file.md", target.Path)
@@ -612,21 +611,6 @@ func TestAnchorsForFile_ReadError(t *testing.T) {
 	_, err := anchorsForFile(tf, cache)
 	require.Error(t, err)
 	require.Equal(t, readErr, err)
-}
-
-// =====================================================================
-// Additional coverage: appendNodeText with *ast.String
-// =====================================================================
-
-// TestAppendNodeText_AstString exercises the *ast.String branch of appendNodeText.
-// ast.String is created by the typographer extension and other paragraph
-// transforms; we construct one directly to keep the test self-contained.
-func TestAppendNodeText_AstString(t *testing.T) {
-	strNode := gast.NewString([]byte("hello"))
-
-	var b strings.Builder
-	appendNodeText(&b, strNode, nil)
-	require.Equal(t, "hello", b.String())
 }
 
 // =====================================================================

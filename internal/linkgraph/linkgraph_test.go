@@ -1,0 +1,136 @@
+package linkgraph
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/jeduden/mdsmith/internal/lint"
+)
+
+func newFile(t *testing.T, source string) *lint.File {
+	t.Helper()
+	f, err := lint.NewFile("test.md", []byte(source))
+	require.NoError(t, err)
+	return f
+}
+
+func TestParseTarget(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		want   Target
+		wantOK bool
+	}{
+		{"empty", "", Target{}, false},
+		{"protocol-relative", "//example.com/x", Target{}, false},
+		{"scheme", "https://example.com", Target{}, false},
+		{"plain path", "guide.md", Target{Raw: "guide.md", Path: "guide.md"}, true},
+		{"path with anchor", "guide.md#sec", Target{Raw: "guide.md#sec", Path: "guide.md", Anchor: "sec"}, true},
+		{"anchor only", "#sec", Target{Raw: "#sec", Anchor: "sec", LocalAnchor: true}, true},
+		{"query only rejected", "?q=1", Target{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ParseTarget(tc.input)
+			assert.Equal(t, tc.wantOK, ok)
+			if ok {
+				assert.Equal(t, tc.want, got)
+			}
+		})
+	}
+}
+
+func TestExtractLinks_Basic(t *testing.T) {
+	f := newFile(t, "# Doc\n\nSee [guide](guide.md#intro) and [home](/).\n")
+	links := ExtractLinks(f)
+	require.Len(t, links, 2)
+
+	assert.Equal(t, "guide", links[0].Text)
+	assert.Equal(t, "guide.md", links[0].Target.Path)
+	assert.Equal(t, "intro", links[0].Target.Anchor)
+	assert.False(t, links[0].Target.LocalAnchor)
+	assert.Equal(t, 3, links[0].Line)
+	assert.Greater(t, links[0].Column, 0)
+
+	assert.Equal(t, "home", links[1].Text)
+	assert.Equal(t, "/", links[1].Target.Path)
+}
+
+func TestExtractLinks_LocalAnchor(t *testing.T) {
+	f := newFile(t, "# Doc\n\nGo [up](#top).\n")
+	links := ExtractLinks(f)
+	require.Len(t, links, 1)
+	assert.True(t, links[0].Target.LocalAnchor)
+	assert.Equal(t, "top", links[0].Target.Anchor)
+}
+
+func TestExtractLinks_SkipsReferenceStyle(t *testing.T) {
+	src := "# Doc\n\nSee [other][label].\n\n[label]: other.md\n"
+	f := newFile(t, src)
+	links := ExtractLinks(f)
+	// Reference-style links resolve via the ref map, not a URL; the
+	// graph builder skips them.
+	assert.Empty(t, links)
+}
+
+func TestExtractLinks_SkipsExternal(t *testing.T) {
+	f := newFile(t, "# Doc\n\nSee [out](https://example.com).\n")
+	links := ExtractLinks(f)
+	assert.Empty(t, links)
+}
+
+func TestExtractLinks_NilFile(t *testing.T) {
+	assert.Nil(t, ExtractLinks(nil))
+}
+
+func TestExtractLinks_RespectsLineOffset(t *testing.T) {
+	source := []byte("---\ntitle: x\n---\nSee [g](g.md).\n")
+	f, err := lint.NewFileFromSource("file.md", source, true)
+	require.NoError(t, err)
+	links := ExtractLinks(f)
+	require.Len(t, links, 1)
+	// Front matter occupies 3 lines; the link's body-relative line is
+	// 1, so the file-relative line is 1 + 3 = 4.
+	assert.Equal(t, 4, links[0].Line)
+}
+
+func TestCollectAnchors(t *testing.T) {
+	f := newFile(t, "# Intro\n\n## Setup\n\n## Setup\n\n##   \n")
+	anchors := CollectAnchors(f)
+	assert.True(t, anchors["intro"])
+	assert.True(t, anchors["setup"])
+	assert.True(t, anchors["setup-1"])
+	assert.False(t, anchors[""], "empty-text headings produce no slug")
+}
+
+func TestCollectAnchors_NilFile(t *testing.T) {
+	got := CollectAnchors(nil)
+	assert.NotNil(t, got)
+	assert.Empty(t, got)
+}
+
+func TestNormalizeAnchor(t *testing.T) {
+	assert.Equal(t, "hello-world", NormalizeAnchor("Hello World"))
+	assert.Equal(t, "section", NormalizeAnchor("Section"))
+	// %20 URL-decodes to a space, which slugifies to a dash.
+	assert.Equal(t, "two-words", NormalizeAnchor("Two%20Words"))
+}
+
+// TestExtractLinks_AgreesWithMDS027 confirms the linkgraph extractor
+// reports the same set of links MDS027 sees when validating cross-file
+// references. The agreement is the load-bearing invariant for the
+// `backlinks` subcommand: a target's incoming-link set must mirror
+// the outgoing-link set MDS027 walks.
+func TestExtractLinks_AgreesWithMDS027(t *testing.T) {
+	src := "# Doc\n\nA [one](a.md), [two](b.md#x), [three](#local), and [ref][r].\n\n[r]: r.md\n"
+	f := newFile(t, src)
+	links := ExtractLinks(f)
+
+	// MDS027 sees the same three direct links (one, two, three) and
+	// skips the reference-style link.
+	require.Len(t, links, 3)
+	texts := []string{links[0].Text, links[1].Text, links[2].Text}
+	assert.Equal(t, []string{"one", "two", "three"}, texts)
+}
