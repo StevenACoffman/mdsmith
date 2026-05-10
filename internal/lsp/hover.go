@@ -156,8 +156,7 @@ func directiveHoverAt(source []byte, pos Position) *hoverResult {
 		if pi.HasClosure() {
 			endLine = f.LineOfOffset(pi.ClosureLine.Start) - 1
 		} else {
-			last := pi.Lines().Len() - 1
-			endLine = f.LineOfOffset(pi.Lines().At(last).Start) - 1
+			endLine = f.LineOfOffset(pi.Lines().At(pi.Lines().Len()-1).Start) - 1
 		}
 
 		if pos.Line < startLine || pos.Line > endLine {
@@ -167,8 +166,7 @@ func directiveHoverAt(source []byte, pos Position) *hoverResult {
 		if pos.Line == startLine && pos.Character < startChar {
 			return ast.WalkContinue, nil
 		}
-		// For single-line PIs the cursor must also fall within the directive
-		// span itself, not on trailing prose after ?>.
+		// For single-line PIs, skip cursor positions past the ?> close.
 		closeIdx := -1
 		if startLine == endLine {
 			closeIdx = bytes.Index(openContent, []byte("?>"))
