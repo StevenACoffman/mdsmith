@@ -2729,10 +2729,16 @@ func TestDirectiveDocFor(t *testing.T) {
 	_, ok = directiveDocFor("unknown-directive-xyz")
 	assert.False(t, ok, "unknown directive must return false")
 
-	for _, name := range []string{"include", "toc", "build", "allow-empty-section", "require", "ignore"} {
+	for _, name := range []string{"include", "build", "allow-empty-section", "require"} {
 		c, found := directiveDocFor(name)
 		assert.True(t, found, "%s should have docs", name)
 		assert.NotEmpty(t, c, "%s docs must be non-empty", name)
+	}
+
+	// toc and ignore have no guide page yet and must return false.
+	for _, name := range []string{"toc", "ignore"} {
+		_, found := directiveDocFor(name)
+		assert.False(t, found, "%s must return false until a guide page exists", name)
 	}
 }
 
@@ -2801,15 +2807,16 @@ func TestDirectiveHoverAtBeforeIndent(t *testing.T) {
 // hovering inside the directive returns docs; hovering after ?> returns nil.
 func TestDirectiveHoverAtSingleLinePI(t *testing.T) {
 	t.Parallel()
-	// Single-line toc directive followed by trailing prose on the same line.
-	src := []byte("# Title\n\n<?toc?> trailing text\n")
+	// Single-line catalog directive followed by trailing prose on the same line.
+	// (toc and ignore have no guide page and are not in directiveToDocFile.)
+	src := []byte("# Title\n\n<?catalog glob:\"*\"?> trailing text\n")
 
-	// Cursor inside the PI span (character 3, within <?toc?>).
+	// Cursor inside the PI span (character 3, within <?catalog glob:"*"?>).
 	result := directiveHoverAt(src, Position{Line: 2, Character: 3})
 	require.NotNil(t, result, "cursor inside single-line PI must return hover result")
 
-	// Cursor after ?> (character 8, in trailing prose).
-	result = directiveHoverAt(src, Position{Line: 2, Character: 8})
+	// Cursor after ?> (character 22, in trailing prose).
+	result = directiveHoverAt(src, Position{Line: 2, Character: 22})
 	assert.Nil(t, result, "cursor after ?> in single-line PI must return nil")
 }
 

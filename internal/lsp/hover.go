@@ -15,14 +15,14 @@ import (
 )
 
 // directiveToDocFile maps directive names to the guide file that documents them.
+// Only directives with a dedicated section in the mapped guide are listed here;
+// toc (MDS038) and ignore have no guide page yet and are omitted.
 var directiveToDocFile = map[string]string{
 	"catalog":             "generating-content.md",
 	"include":             "generating-content.md",
-	"toc":                 "generating-content.md",
 	"build":               "build.md",
 	"allow-empty-section": "enforcing-structure.md",
 	"require":             "enforcing-structure.md",
-	"ignore":              "enforcing-structure.md",
 }
 
 // directiveDocCache holds parsed directive doc content, loaded once.
@@ -40,11 +40,16 @@ func directiveDocFor(name string) (string, bool) {
 	}
 	directiveDocCache.Do(func() {
 		directiveDocCache.docs = make(map[string]string)
-		// directives.FS is an embedded FS — ReadDir and ReadFile never error.
-		entries, _ := fs.ReadDir(directives.FS, ".")
-		for _, e := range entries {
-			data, _ := fs.ReadFile(directives.FS, e.Name())
-			directiveDocCache.docs[e.Name()] = rules.StripFrontMatter(string(data))
+		// Only load the distinct filenames actually referenced by the map.
+		// directives.FS is embedded, so ReadFile never errors.
+		seen := make(map[string]bool)
+		for _, fname := range directiveToDocFile {
+			if seen[fname] {
+				continue
+			}
+			seen[fname] = true
+			data, _ := fs.ReadFile(directives.FS, fname)
+			directiveDocCache.docs[fname] = rules.StripFrontMatter(string(data))
 		}
 	})
 	content, ok := directiveDocCache.docs[filename]
@@ -114,6 +119,10 @@ func ruleHoverContent(d Diagnostic) string {
 // block in source. Returns a *hoverResult when a documented directive is
 // found at the cursor, nil otherwise.
 func directiveHoverAt(source []byte, pos Position) *hoverResult {
+	// Skip the full parse when the document contains no PIs at all.
+	if !bytes.Contains(source, []byte("<?")) {
+		return nil
+	}
 	f, _ := lint.NewFile("hover", source)
 	lines := splitLines(source)
 	var result *hoverResult
