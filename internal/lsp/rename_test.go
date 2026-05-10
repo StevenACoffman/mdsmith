@@ -410,3 +410,42 @@ func TestAnchorFragmentBytesRejectsPrefixMatch(t *testing.T) {
 	_, _, ok := anchorFragmentBytes(row, 4, "foo")
 	assert.False(t, ok)
 }
+
+// TestAnchorFragmentBytesNormalizesCase verifies that a raw
+// fragment whose case differs from the slug still matches —
+// the index keys edges by mdtext.Slugify(decoded), which is
+// lowercase, so `#Setup` participates in a rename of the
+// `setup` slug.
+func TestAnchorFragmentBytesNormalizesCase(t *testing.T) {
+	t.Parallel()
+	row := []byte("see [t](#Setup)")
+	start, end, ok := anchorFragmentBytes(row, 4, "setup")
+	require.True(t, ok)
+	assert.Equal(t, "Setup", string(row[start:end]))
+}
+
+// TestAnchorFragmentBytesURLDecodesPercentEscape verifies that
+// `#Docs%20API` (a real GitHub anchor when the heading is
+// "Docs API") matches the indexed slug `docs-api`.
+func TestAnchorFragmentBytesURLDecodesPercentEscape(t *testing.T) {
+	t.Parallel()
+	row := []byte("see [t](#Docs%20API)")
+	start, end, ok := anchorFragmentBytes(row, 4, "docs-api")
+	require.True(t, ok)
+	assert.Equal(t, "Docs%20API", string(row[start:end]))
+}
+
+// TestRefUseLabelBytesCollapsedTrailingEmptyBrackets verifies
+// that the cursor on the trailing `[]` of a collapsed reference
+// resolves to the leading bracket pair, not nil. The Locator
+// already tags the position as TokenRefUse for collapsed links,
+// so prepareRename must surface a range there or rename is
+// effectively unreachable on `[label][]`.
+func TestRefUseLabelBytesCollapsedTrailingEmptyBrackets(t *testing.T) {
+	t.Parallel()
+	row := []byte(`See [Docs API][] elsewhere`)
+	// Cursor inside the trailing `[]` (byte offset 14 = `[`).
+	start, end, ok := refUseLabelBytes(row, 14, "docs api")
+	require.True(t, ok, "expected match for cursor inside trailing []")
+	assert.Equal(t, "Docs API", string(row[start:end]))
+}

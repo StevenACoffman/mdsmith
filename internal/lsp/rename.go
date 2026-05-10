@@ -3,6 +3,7 @@ package lsp
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -288,49 +289,67 @@ func refUsePrepareRange(source []byte, line, col int, label string) (prepareRena
 // collapsed); matching is done against the raw bracket content via
 // the same util.ToLinkReference normalization.
 func refUseLabelBytes(row []byte, cursorByte int, label string) (int, int, bool) {
-	// Scan all bracket pairs on the line.
-	type pair struct{ open, close int }
-	var pairs []pair
-	for i := 0; i < len(row); i++ {
-		if row[i] != '[' {
-			continue
-		}
-		// Find matching `]` allowing escaped `\]`.
-		for j := i + 1; j < len(row); j++ {
-			if row[j] == '\\' && j+1 < len(row) {
-				j++
-				continue
-			}
-			if row[j] == ']' {
-				pairs = append(pairs, pair{i, j})
-				i = j
-				break
-			}
-		}
-	}
-	for idx, pr := range pairs {
+	pairs := bracketPairs(row)
+	for i, pr := range pairs {
 		if cursorByte < pr.open || cursorByte > pr.close {
 			continue
 		}
-		// Full reference: this opener is followed immediately by
-		// another `[…]` whose normalized content equals label.
-		if idx+1 < len(pairs) && pairs[idx+1].open == pr.close+1 {
-			next := pairs[idx+1]
-			if normalizedLabel(row[next.open+1:next.close]) == label {
-				return next.open + 1, next.close, true
-			}
+		if start, end, ok := matchLeadingPair(row, pairs, i, label); ok {
+			return start, end, true
 		}
-		// Cursor inside the second pair of a full reference?
-		if idx > 0 && pairs[idx-1].close+1 == pr.open {
-			if normalizedLabel(row[pr.open+1:pr.close]) == label {
-				return pr.open + 1, pr.close, true
-			}
+		if start, end, ok := matchTrailingPair(row, pairs, i, label); ok {
+			return start, end, true
 		}
-		// Shortcut / collapsed: this pair's content normalizes to
-		// label.
+		// Shortcut `[label]`: this pair's content normalizes to label.
 		if normalizedLabel(row[pr.open+1:pr.close]) == label {
 			return pr.open + 1, pr.close, true
 		}
+	}
+	return 0, 0, false
+}
+
+// matchLeadingPair handles the case where the cursor sits in the
+// leading pair of a reference link. Returns the label range when
+// pairs[i] is followed by a flush pair: a full `[text][label]`
+// resolves to the trailing pair, while a collapsed `[label][]`
+// resolves to the leading pair (the trailing one is empty).
+func matchLeadingPair(row []byte, pairs []bracketPair, i int, label string) (int, int, bool) {
+	if i+1 >= len(pairs) {
+		return 0, 0, false
+	}
+	next := pairs[i+1]
+	pr := pairs[i]
+	if next.open != pr.close+1 {
+		return 0, 0, false
+	}
+	if normalizedLabel(row[next.open+1:next.close]) == label {
+		return next.open + 1, next.close, true
+	}
+	if next.close == next.open+1 && normalizedLabel(row[pr.open+1:pr.close]) == label {
+		return pr.open + 1, pr.close, true
+	}
+	return 0, 0, false
+}
+
+// matchTrailingPair handles the case where the cursor sits in the
+// trailing pair of a reference link. The previous pair sits flush
+// before our opener; for collapsed references the trailing pair is
+// empty and the label lives in the previous pair, while for full
+// references the trailing pair carries the label directly.
+func matchTrailingPair(row []byte, pairs []bracketPair, i int, label string) (int, int, bool) {
+	if i == 0 {
+		return 0, 0, false
+	}
+	prev := pairs[i-1]
+	pr := pairs[i]
+	if prev.close+1 != pr.open {
+		return 0, 0, false
+	}
+	if pr.close == pr.open+1 && normalizedLabel(row[prev.open+1:prev.close]) == label {
+		return prev.open + 1, prev.close, true
+	}
+	if normalizedLabel(row[pr.open+1:pr.close]) == label {
+		return pr.open + 1, pr.close, true
 	}
 	return 0, 0, false
 }
@@ -638,20 +657,18 @@ func (s *Server) anchorEditForEdge(e index.Edge, oldSlug, newSlug string) (strin
 	}, true
 }
 
-// anchorFragmentBytes finds the `oldSlug` fragment inside a link
-// destination on row, starting from the link's text-start column.
-// The function scans for the destination's enclosing `(` and then
-// for `#`+oldSlug within those parens. Returns the byte range of
-// just the slug (excluding the leading `#`) so callers can replace
-// it with the new slug verbatim.
+// anchorFragmentBytes locates the byte range of the fragment slug
+// inside a link destination on row, starting from the link's
+// text-start column. Returns the range of the raw fragment text
+// (excluding the leading `#`) so callers can replace it with the
+// new slug.
 //
-// Multi-link lines are handled by walking forward from textStart,
-// the column the index recorded for the link's first text segment.
-// A link whose destination doesn't carry oldSlug (e.g. another
-// link earlier on the same line) is skipped because the bracket /
-// paren walker only advances past the matching `)`.
+// The match is normalized: the raw fragment is URL-unescaped and
+// run through mdtext.Slugify, mirroring the way the index keys
+// incoming edges. That way `(#Setup)` and `(#Docs%20API)` both
+// participate in a rename even though their literal byte
+// sequences differ from `setup` / `docs-api`.
 func anchorFragmentBytes(row []byte, textStart int, oldSlug string) (int, int, bool) {
-	// Find `(` after the text run starting at or before textStart.
 	bracketStart := textStart
 	if bracketStart < 0 {
 		bracketStart = 0
@@ -659,9 +676,28 @@ func anchorFragmentBytes(row []byte, textStart int, oldSlug string) (int, int, b
 	if bracketStart >= len(row) {
 		return 0, 0, false
 	}
-	// Locate the destination opener: scan forward for `](`.
+	open, close, ok := destBounds(row, bracketStart)
+	if !ok {
+		return 0, 0, false
+	}
+	hash := indexOfHash(row, open, close)
+	if hash < 0 {
+		return 0, 0, false
+	}
+	fragEnd := fragmentEnd(row, hash+1, close)
+	rawFrag := row[hash+1 : fragEnd]
+	if !fragmentMatchesSlug(rawFrag, oldSlug) {
+		return 0, 0, false
+	}
+	return hash + 1, fragEnd, true
+}
+
+// destBounds returns the `(` open and `)` close byte offsets of a
+// link destination starting at or after `from` on row, accounting
+// for nested parens.
+func destBounds(row []byte, from int) (int, int, bool) {
 	open := -1
-	for i := bracketStart; i < len(row)-1; i++ {
+	for i := from; i < len(row)-1; i++ {
 		if row[i] == ']' && row[i+1] == '(' {
 			open = i + 2
 			break
@@ -670,10 +706,6 @@ func anchorFragmentBytes(row []byte, textStart int, oldSlug string) (int, int, b
 	if open < 0 {
 		return 0, 0, false
 	}
-	// Find matching `)` accounting for nested parens. Tracking the
-	// closing position with a flag (rather than an inner break)
-	// keeps the loop's exit condition unambiguous — `break` inside
-	// a `switch` only exits the switch, not the loop.
 	close := -1
 	depth := 1
 	for j := open; j < len(row) && close < 0; j++ {
@@ -690,29 +722,45 @@ func anchorFragmentBytes(row []byte, textStart int, oldSlug string) (int, int, b
 	if close < 0 {
 		return 0, 0, false
 	}
-	dest := row[open:close]
-	// Locate `#oldSlug` inside the destination. The slug is ASCII;
-	// no decoding needed because mdtext.Slugify produces only
-	// lowercase letters, digits, and `-`.
-	target := []byte("#" + oldSlug)
-	idx := indexOfBytes(dest, target)
-	if idx < 0 {
-		return 0, 0, false
-	}
-	startByte := open + idx + 1 // skip leading `#`
-	endByte := startByte + len(oldSlug)
-	// Reject if the match is not at the actual end of the fragment
-	// (e.g. we matched `#foo` inside `#foobar`). Fragments end at
-	// `)`, `?`, or whitespace — defending against `?title` query
-	// parts would be over-engineering for Markdown links, but the
-	// boundary check stops `#foo` from rewriting `#foobar`.
-	if endByte < close {
-		nb := row[endByte]
-		if nb != ')' && nb != ' ' && nb != '\t' {
-			return 0, 0, false
+	return open, close, true
+}
+
+// indexOfHash returns the offset of the first `#` in row[open:close],
+// or -1 when the destination has no fragment. The first `#` wins
+// because URL fragments by definition start at the first `#`.
+func indexOfHash(row []byte, open, close int) int {
+	for i := open; i < close; i++ {
+		if row[i] == '#' {
+			return i
 		}
 	}
-	return startByte, endByte, true
+	return -1
+}
+
+// fragmentEnd returns the byte offset where a fragment ends within
+// row[start:close]. CommonMark inline-link destinations don't carry
+// query strings (the `(url "title")` title form is parsed by
+// goldmark separately), so the fragment runs from `start` to the
+// first whitespace or to `close`.
+func fragmentEnd(row []byte, start, close int) int {
+	for i := start; i < close; i++ {
+		if row[i] == ' ' || row[i] == '\t' {
+			return i
+		}
+	}
+	return close
+}
+
+// fragmentMatchesSlug reports whether the raw bytes of a link
+// fragment slugify to oldSlug. URL-unescape mirrors decodeAnchor
+// in the index so `%20` and friends decode the same way before
+// the slug pass.
+func fragmentMatchesSlug(rawFrag []byte, oldSlug string) bool {
+	decoded, err := url.PathUnescape(string(rawFrag))
+	if err != nil {
+		decoded = string(rawFrag)
+	}
+	return mdtext.Slugify(decoded) == oldSlug
 }
 
 // indexOfBytes is bytes.Index but defined locally to keep this file
