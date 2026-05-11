@@ -234,8 +234,11 @@ not a parallel system.
    Max, Closed, Wildcard, Rules).
 2. ✅ Two parsers feed the same struct: inline
    YAML under `kinds.<name>.schema:` and a
-   `proto.md` file. Repeating patterns parse
-   but enforcement is deferred to plan 142.
+   `proto.md` file. Repeating-pattern keys
+   (`repeats` / `sequential` / `min` / `max`)
+   live on the Scope struct but the inline
+   parser rejects them at parse time with a
+   message pointing at plan 142.
 3. ✅ Reject configs that set both sources on
    one kind (see
    `internal/config/validate.go`).
@@ -255,8 +258,7 @@ not a parallel system.
    is a follow-up.
 7. ✅ Documented in the
    [MDS020 README](../internal/rules/MDS020-required-structure/README.md).
-   Added
-   [docs/guides/schemas.md](../docs/guides/schemas.md).
+   Added [docs/guides/schemas.md](../docs/guides/schemas.md).
 8. ✅ Fixtures: `good/inline-flat.md`,
    `good/inline-runbook.md` (3-level tree with
    aliases), `good/inline-wildcard.md`,

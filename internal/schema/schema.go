@@ -36,11 +36,14 @@ type Schema struct {
 	// whole (filename pattern, etc.).
 	Require Require
 
-	// Sections holds the top-level section list (H2). Each Scope may
-	// itself nest further sections (H3, H4, ...). The Schema's H1 is
-	// reserved for the document title and is constrained separately
-	// via the first-line-heading rule and any title-bearing
-	// frontmatter field, so it is not represented here.
+	// Sections holds the top-level section list at RootLevel; each
+	// Scope may itself nest further sections one heading level
+	// deeper. Inline schemas always start at H2 (RootLevel=2), so
+	// the document H1 is owned by first-line-heading and any
+	// title-bearing frontmatter field rather than represented here.
+	// File-based schemas can root at H1 (e.g. a `# ?` wildcard in
+	// proto.md, RootLevel=1) — that H1 scope is part of Sections
+	// and its children appear at level 2.
 	Sections []Scope
 
 	// Closed reports whether the root scope is strict: when true,
@@ -77,10 +80,13 @@ type Require struct {
 // top-level (H2) section list; their children are H3, and so on.
 // Levels come from depth in the tree.
 type Scope struct {
-	// Heading is the literal heading text. No "#" markers; the level
-	// comes from depth in the tree. May contain placeholder tokens
-	// ({n}, {slug}, {title}) when Repeats is true. Empty when
-	// Wildcard is true.
+	// Heading is the heading text to match. No "#" markers; the
+	// level comes from depth in the tree. The single-character
+	// "?" matches any text. Headings (and aliases) containing
+	// `{field}` interpolation are matched as anchored regex
+	// patterns, with each placeholder consuming one or more
+	// characters of the doc heading text. Empty when Wildcard is
+	// true.
 	Heading string
 
 	// Required reports whether a matching heading must appear in
