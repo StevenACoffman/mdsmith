@@ -1,6 +1,7 @@
 package requiredstructure
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/jeduden/mdsmith/internal/fieldinterp"
@@ -27,7 +28,8 @@ func (r *Rule) applyScopeRules(f *lint.File, sch *schema.Schema) []lint.Diagnost
 	rootLevel := sch.EffectiveRootLevel()
 	body := skipBelow(heads, rootLevel)
 	var diags []lint.Diagnostic
-	walkScopes(sch.Sections, body, 0, rootLevel, len(f.Lines)+1,
+	claimed := make(map[int]bool, len(body))
+	walkScopes(sch.Sections, body, rootLevel, 1, len(f.Lines)+1, claimed,
 		func(sc schema.Scope, startLine, endLine int) {
 			if len(sc.Rules) == 0 {
 				return
@@ -49,45 +51,73 @@ func skipBelow(heads []schema.DocHeading, rootLevel int) []schema.DocHeading {
 	return nil
 }
 
-// walkScopes performs a positional walk of the schema scope tree
-// against doc headings, mirroring the validator's matching order. It
-// calls visit for each scope that matched a doc heading, providing
-// the inclusive 1-based start line and the exclusive end line of
-// the scope's content range.
+// walkScopes pairs each scope with a doc heading and invokes visit
+// with the inclusive 1-based start line and the exclusive end line
+// of the scope's content range. The walker mirrors the validator's
+// claim logic: a doc heading that appears out of order still
+// matches its scope so per-scope rule overrides apply even when the
+// surrounding document is currently invalid.
 //
-// The walk is structural — it pairs scopes to doc headings by
-// matching text and level so the visit callback receives accurate
-// line ranges to filter diagnostics with.
+// claimed tracks heading indices already paired with a scope. The
+// boundary parentEnd is the exclusive end line of the enclosing
+// section (or fileEnd at the root) so a nested walk does not match
+// headings that belong to an ancestor.
 func walkScopes(
 	scopes []schema.Scope, heads []schema.DocHeading,
-	docIdx, expectedLevel, fileEnd int,
+	expectedLevel, parentStart, parentEnd int,
+	claimed map[int]bool,
 	visit func(sc schema.Scope, startLine, endLine int),
-) int {
+) {
 	for _, sc := range scopes {
 		if sc.Wildcard {
 			continue
 		}
-		matched := findMatchingHead(sc, heads, docIdx, expectedLevel)
+		matched := findMatchingHead(sc, heads, expectedLevel, parentStart, parentEnd, claimed)
 		if matched < 0 {
 			continue
 		}
+		claimed[matched] = true
 		dh := heads[matched]
-		end := scopeEndLine(heads, matched, expectedLevel, fileEnd)
+		end := scopeEndLine(heads, matched, expectedLevel, parentEnd)
 		visit(sc, dh.Line, end)
 		if len(sc.Sections) > 0 {
-			walkScopes(sc.Sections, heads, matched+1,
-				expectedLevel+1, end, visit)
+			walkScopes(sc.Sections, heads,
+				expectedLevel+1, dh.Line, end, claimed, visit)
 		}
-		docIdx = matched + 1
 	}
-	return docIdx
 }
 
-func findMatchingHead(sc schema.Scope, heads []schema.DocHeading, start, expectedLevel int) int {
-	for j := start; j < len(heads); j++ {
-		dh := heads[j]
-		if dh.Level < expectedLevel {
-			return -1
+// findMatchingHead returns the earliest unclaimed heading index in
+// heads whose level matches expectedLevel and whose text matches
+// sc, restricted to the [parentStart, parentEnd) line window. When
+// no in-window heading matches, it falls back to an out-of-window
+// match so the walker mirrors the validator's out-of-order claim.
+func findMatchingHead(
+	sc schema.Scope, heads []schema.DocHeading,
+	expectedLevel, parentStart, parentEnd int,
+	claimed map[int]bool,
+) int {
+	for j, dh := range heads {
+		if claimed[j] {
+			continue
+		}
+		if dh.Line < parentStart || dh.Line >= parentEnd {
+			continue
+		}
+		if dh.Level != expectedLevel {
+			continue
+		}
+		if scopeTextMatches(sc, dh) {
+			return j
+		}
+	}
+	// Fallback: scan all unclaimed headings, ignoring the line
+	// window. This mirrors the validator claiming a heading whose
+	// expected level differs (level-mismatch case) or which appears
+	// out of position.
+	for j, dh := range heads {
+		if claimed[j] {
+			continue
 		}
 		if scopeTextMatches(sc, dh) {
 			return j
@@ -98,17 +128,21 @@ func findMatchingHead(sc schema.Scope, heads []schema.DocHeading, start, expecte
 
 // scopeEndLine returns the exclusive end-line of the section
 // beginning at heads[matched]. The section ends at the first
-// subsequent heading whose level is <= expectedLevel, or at fileEnd
-// when no such heading follows.
+// subsequent heading whose level is <= expectedLevel and whose line
+// falls inside the parent window, or at parentEnd when no such
+// heading follows.
 func scopeEndLine(
-	heads []schema.DocHeading, matched, expectedLevel, fileEnd int,
+	heads []schema.DocHeading, matched, expectedLevel, parentEnd int,
 ) int {
 	for j := matched + 1; j < len(heads); j++ {
+		if heads[j].Line >= parentEnd {
+			break
+		}
 		if heads[j].Level <= expectedLevel {
 			return heads[j].Line
 		}
 	}
-	return fileEnd
+	return parentEnd
 }
 
 // scopeTextMatches reports whether sc matches dh by heading text.
@@ -157,6 +191,10 @@ func matchesScopeText(pattern, text string) bool {
 // diagnostics that fall within the scope's line range. Each rule is
 // cloned and configured with its defaults deep-merged with the
 // scope's override.
+//
+// Misconfigurations (unknown rule name, ApplySettings error) surface
+// as MDS020 diagnostics at the scope's heading line so users see the
+// problem instead of the override silently no-op'ing.
 func runScopeRules(
 	f *lint.File, sc schema.Scope, startLine, endLine int,
 ) []lint.Diagnostic {
@@ -164,11 +202,18 @@ func runScopeRules(
 	for name, override := range sc.Rules {
 		base := rule.ByName(name)
 		if base == nil {
+			diags = append(diags, makeDiag(f.Path, startLine,
+				fmt.Sprintf(
+					"scope rule override for unknown rule %q", name)))
 			continue
 		}
 		configured := rule.CloneRule(base)
 		if c, ok := configured.(rule.Configurable); ok {
 			if err := c.ApplySettings(override); err != nil {
+				diags = append(diags, makeDiag(f.Path, startLine,
+					fmt.Sprintf(
+						"scope rule override for %q is invalid: %v",
+						name, err)))
 				continue
 			}
 		}

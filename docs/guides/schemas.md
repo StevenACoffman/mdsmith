@@ -123,10 +123,18 @@ sections:
         max-words: 200
 ```
 
-The same rule may have a per-file config (set by a
-top-level `rules:` entry, a kind, or an override) and
-a per-scope config; the scope wins inside its subtree
-and yields to the per-file config outside it.
+Today the per-scope override stacks on top of the
+rule's defaults, not the rule's full per-file config.
+Outside the scope, the per-file config still applies
+unchanged; inside, the scope's override sits on rule
+defaults. Threading the full
+defaults → kinds → file globs → scope merge through
+the engine is tracked as a follow-up on plan 146.
+
+If a scope's `rules:` block names a rule that does
+not exist or supplies settings the rule rejects, the
+override surfaces as an MDS020 diagnostic at the
+scope's heading line.
 
 ## File-based schemas (`proto.md`)
 

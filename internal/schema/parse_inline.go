@@ -197,6 +197,10 @@ func parseInlineScopeEntry(entry any, path string) (Scope, error) {
 	if err := applyScopeFields(m, &sc, path); err != nil {
 		return Scope{}, err
 	}
+	if !sc.Wildcard && strings.TrimSpace(sc.Heading) == "" {
+		return Scope{}, fmt.Errorf(
+			"%s: non-wildcard scope must set a non-empty heading", path)
+	}
 	return sc, nil
 }
 
@@ -262,6 +266,13 @@ func setScopeInt(dst *int, v any, path, key string) error {
 	case int64:
 		*dst = int(n)
 	case float64:
+		// YAML decodes plain numbers as float64; only accept whole-
+		// number values so a typo like `min: 1.5` does not silently
+		// round to 1.
+		if n != float64(int(n)) {
+			return fmt.Errorf(
+				"%s.%s must be an integer, got %v", path, key, n)
+		}
 		*dst = int(n)
 	default:
 		return fmt.Errorf("%s.%s must be an integer, got %T", path, key, v)

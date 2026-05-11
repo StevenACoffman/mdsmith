@@ -254,6 +254,86 @@ func TestCheck_InlineSchema_FrontmatterCUE(t *testing.T) {
 		"front matter does not satisfy schema CUE constraints")
 }
 
+func TestCheck_InlineSchema_ScopeRuleUnknownName(t *testing.T) {
+	r := &Rule{InlineSchema: inlineSchema(t, map[string]any{
+		"sections": []any{
+			map[string]any{
+				"heading": "Loose",
+				"rules": map[string]any{
+					"definitely-not-a-rule": map[string]any{},
+				},
+			},
+		},
+	})}
+	f := newTestFile(t, "doc.md", "# Doc\n\n## Loose\n\nx\n")
+	diags := r.Check(f)
+	expectDiagMsg(t, diags,
+		`scope rule override for unknown rule "definitely-not-a-rule"`)
+}
+
+func TestCheck_InlineSchema_ScopeRuleInvalidSettings(t *testing.T) {
+	// line-length expects max as int; supplying a non-int triggers
+	// the ApplySettings error path inside runScopeRules.
+	r := &Rule{InlineSchema: inlineSchema(t, map[string]any{
+		"sections": []any{
+			map[string]any{
+				"heading": "Loose",
+				"rules": map[string]any{
+					"line-length": map[string]any{
+						"max": "twenty",
+					},
+				},
+			},
+		},
+	})}
+	f := newTestFile(t, "doc.md", "# Doc\n\n## Loose\n\nx\n")
+	diags := r.Check(f)
+	expectDiagMsg(t, diags,
+		`scope rule override for "line-length" is invalid`)
+}
+
+func TestCheck_InlineSchema_ScopeRuleOutOfOrderStillFires(t *testing.T) {
+	// Doc has sections in the wrong order. The structural validator
+	// emits an out-of-order diagnostic but the scope-rule walker
+	// still claims the Strict section and applies its override —
+	// regression for the Copilot review note about walkScopes
+	// missing out-of-order matches.
+	r := &Rule{InlineSchema: inlineSchema(t, map[string]any{
+		"closed": true,
+		"sections": []any{
+			map[string]any{"heading": "Loose"},
+			map[string]any{
+				"heading": "Strict",
+				"rules": map[string]any{
+					"line-length": map[string]any{
+						"max":     20,
+						"stern":   true,
+						"exclude": []any{},
+					},
+				},
+			},
+		},
+	})}
+	// Strict appears first; Loose second.
+	src := "# Doc\n\n" +
+		"## Strict\n\n" +
+		"This line is well over twenty chars and should fire under the strict cap.\n\n" +
+		"## Loose\n\n" +
+		"This line is well over twenty chars but the loose scope tolerates it.\n"
+	f := newTestFile(t, "doc.md", src)
+	diags := r.Check(f)
+	var lineLength []lint.Diagnostic
+	for _, d := range diags {
+		if d.RuleID == "MDS001" {
+			lineLength = append(lineLength, d)
+		}
+	}
+	require.Len(t, lineLength, 1,
+		"out-of-order Strict section should still pick up its scope override")
+	assert.Equal(t, 5, lineLength[0].Line,
+		"diagnostic should land on the long line inside Strict")
+}
+
 // TestCheck_InlineSchema_PerScopeRuleOverride covers acceptance
 // criterion #7: a schema `rules:` block on a section applies the
 // override to that section only. The fixture puts the same prose
