@@ -128,6 +128,67 @@ func TestIncomingEdgesAcrossFiles(t *testing.T) {
 	assert.Equal(t, "b.md", in[0].SourceFile)
 }
 
+// TestBacklinksForCollectsEveryEdgeKind exercises the "what cites
+// this file?" question. The target file is cited from three other
+// files: a plain file link, a file link with an anchor, and an
+// include directive. All three must appear in BacklinksFor; the
+// narrower IncomingEdges(file, anchor) would only surface the
+// anchor-matching one.
+//
+// The `multi.md` source has two citations on different lines so
+// the sort comparator's same-SourceFile arm participates in
+// coverage and the order it produces is stable.
+func TestBacklinksForCollectsEveryEdgeKind(t *testing.T) {
+	t.Parallel()
+	idx := New("/root")
+	idx.Update("target.md", []byte("# Target\n\n## Sec\n"))
+	idx.Update("plain.md", []byte("# P\n\n[t](./target.md)\n"))
+	idx.Update("anchor.md", []byte("# A\n\n[t](./target.md#sec)\n"))
+	idx.Update("includer.md", []byte("# I\n\n<?include\nfile: target.md\n?>\n<?/include?>\n"))
+	// Two edges from the same source file, on different lines.
+	idx.Update("multi.md", []byte("# M\n\n[a](./target.md)\n[b](./target.md#sec)\n"))
+
+	got := idx.BacklinksFor("target.md")
+	require.Len(t, got, 5)
+	sources := make([]string, len(got))
+	for i, e := range got {
+		sources[i] = e.SourceFile
+	}
+	assert.Equal(t, []string{"anchor.md", "includer.md", "multi.md", "multi.md", "plain.md"}, sources)
+	// Within multi.md, sort by SourceLine.
+	multi := []Edge{got[2], got[3]}
+	assert.Less(t, multi[0].SourceLine, multi[1].SourceLine)
+}
+
+// TestBacklinksForBreaksTiesBySourceCol verifies the
+// SourceCol leg of the sort comparator. Two edges on the same
+// source line at different columns get ordered left-to-right.
+func TestBacklinksForBreaksTiesBySourceCol(t *testing.T) {
+	t.Parallel()
+	idx := New("/root")
+	idx.Update("target.md", []byte("# T\n"))
+	idx.Update("twin.md", []byte("# X\n\n[a](./target.md) and [b](./target.md)\n"))
+	got := idx.BacklinksFor("target.md")
+	require.Len(t, got, 2)
+	assert.Equal(t, got[0].SourceLine, got[1].SourceLine)
+	assert.Less(t, got[0].SourceCol, got[1].SourceCol)
+}
+
+// TestBacklinksForEmptyTarget covers the no-incoming-edges path.
+func TestBacklinksForEmptyTarget(t *testing.T) {
+	t.Parallel()
+	idx := New("/root")
+	idx.Update("lonely.md", []byte("# Lonely\n"))
+	assert.Empty(t, idx.BacklinksFor("lonely.md"))
+}
+
+// TestBacklinksForNilIndex covers the defensive nil receiver path.
+func TestBacklinksForNilIndex(t *testing.T) {
+	t.Parallel()
+	var idx *Index
+	assert.Nil(t, idx.BacklinksFor("any.md"))
+}
+
 func TestSearchSymbolsMatchesHeadings(t *testing.T) {
 	t.Parallel()
 	idx := New("/root")

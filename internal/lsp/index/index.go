@@ -16,6 +16,7 @@ package index
 
 import (
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -303,6 +304,34 @@ func (i *Index) IncomingEdges(file, anchor string) []Edge {
 		}
 	}
 	return out
+}
+
+// BacklinksFor returns every workspace edge whose target is file,
+// regardless of anchor or edge kind. Use this for the "what cites
+// this file?" question — IncomingEdges(file, anchor) answers the
+// narrower "what targets this specific heading".
+//
+// Self-references (the file linking to itself) are included so
+// callers can filter on SourceFile when they want only external
+// citations. The returned slice is freshly allocated and sorted
+// by (SourceFile, SourceLine, SourceCol) so callers presenting
+// the result to a user — or asserting on it in a test — see a
+// stable order regardless of the underlying map iteration.
+func (i *Index) BacklinksFor(file string) []Edge {
+	if i == nil {
+		return nil
+	}
+	edges := i.IncomingEdges(file, "")
+	sort.Slice(edges, func(a, b int) bool {
+		if edges[a].SourceFile != edges[b].SourceFile {
+			return edges[a].SourceFile < edges[b].SourceFile
+		}
+		if edges[a].SourceLine != edges[b].SourceLine {
+			return edges[a].SourceLine < edges[b].SourceLine
+		}
+		return edges[a].SourceCol < edges[b].SourceCol
+	})
+	return edges
 }
 
 // OutgoingEdges returns the edges originating in file.
