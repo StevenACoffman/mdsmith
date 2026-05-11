@@ -100,8 +100,15 @@ the result set once the matching parser support lands.
 
 ## Exit codes
 
-| Code | Meaning                 |
-|------|-------------------------|
-| 0    | At least one match      |
-| 1    | No incoming links found |
-| 2    | Runtime/parse error     |
+| Code | Meaning               |
+|------|-----------------------|
+| 0    | At least one match    |
+| 1    | No matches, no errors |
+| 2    | Runtime/parse error   |
+
+Per-file read failures are printed to stderr and never
+abort the walk: matches from the surviving files still
+appear on stdout. The exit code reflects the worst
+outcome — `0` when any record was emitted, `2` when
+nothing matched but errors occurred, `1` only on a
+clean empty result.

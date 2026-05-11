@@ -129,7 +129,15 @@ func runBacklinks(args []string) int {
 		fmt.Fprintf(os.Stderr, "mdsmith: %v\n", e)
 	}
 
-	return emitBacklinks(os.Stdout, records, opts.format, opts.limit)
+	code = emitBacklinks(os.Stdout, records, opts.format, opts.limit)
+	// Exit-code precedence: records found wins (0), then runtime
+	// errors (2), then clean empty result (1). This matches `check`,
+	// where diagnostics outrank per-file read errors but a fully
+	// failed run reports the error.
+	if code == 1 && len(errs) > 0 {
+		return 2
+	}
+	return code
 }
 
 // validateIncludePatterns rejects any --include glob that doublestar
@@ -218,7 +226,10 @@ func collectBacklinks(
 		}
 		for _, link := range linkgraph.ExtractLinks(f) {
 			t := link.Target
-			if t.LocalAnchor || t.Path == "" {
+			// Skip same-file anchor refs: backlinks only surfaces
+			// cross-file edges. linkgraph guarantees a non-empty
+			// Path whenever LocalAnchor is false.
+			if t.LocalAnchor {
 				continue
 			}
 			resolved := resolveLinkTarget(srcRel, t.Path)
@@ -252,36 +263,37 @@ func collectBacklinks(
 }
 
 // workspaceRelativePath returns p relative to rootDir using forward
-// slashes. When rootDir is empty or p cannot be made relative, p is
-// returned as-is with separators normalized.
+// slashes. When rootDir is empty or filepath.Rel cannot relate the
+// paths, p is returned as-is with separators normalized.
 func workspaceRelativePath(p, rootDir string) string {
-	cleaned := filepath.ToSlash(p)
+	fallback := strings.TrimPrefix(filepath.ToSlash(p), "./")
 	if rootDir == "" {
-		return strings.TrimPrefix(cleaned, "./")
+		return fallback
 	}
 	abs, err := filepath.Abs(p)
 	if err != nil {
-		return strings.TrimPrefix(cleaned, "./")
+		return fallback
 	}
 	absRoot, err := filepath.Abs(rootDir)
 	if err != nil {
-		return strings.TrimPrefix(cleaned, "./")
+		return fallback
 	}
 	rel, err := filepath.Rel(absRoot, abs)
 	if err != nil {
-		return strings.TrimPrefix(cleaned, "./")
+		return fallback
 	}
 	return filepath.ToSlash(rel)
 }
 
 // resolveLinkTarget joins srcRel's directory with the link's path and
 // returns the workspace-relative result. Both inputs use forward
-// slashes. Absolute paths and ones that escape the workspace root
-// return "" so callers treat them as "outside the graph".
+// slashes. Absolute paths (including Windows drive letters and UNC
+// prefixes) and ones that escape the workspace root return "" so
+// callers treat them as "outside the graph".
 func resolveLinkTarget(srcRel, linkPath string) string {
 	srcRel = strings.ReplaceAll(srcRel, `\`, `/`)
 	linkPath = strings.ReplaceAll(linkPath, `\`, `/`)
-	if path.IsAbs(srcRel) || path.IsAbs(linkPath) {
+	if isAbsOrDriveOrUNC(srcRel) || isAbsOrDriveOrUNC(linkPath) {
 		return ""
 	}
 	dir := path.Dir(srcRel)
@@ -290,6 +302,23 @@ func resolveLinkTarget(srcRel, linkPath string) string {
 		return ""
 	}
 	return cleaned
+}
+
+// isAbsOrDriveOrUNC reports whether p is absolute under any of the
+// schemes mdsmith targets: POSIX-style leading `/`, Windows drive
+// letters like `C:/`, or UNC prefixes like `//host`. `path.IsAbs`
+// alone misses the Windows forms because the path package is Unix-only.
+func isAbsOrDriveOrUNC(p string) bool {
+	if path.IsAbs(p) {
+		return true
+	}
+	if len(p) >= 2 && p[1] == ':' {
+		c := p[0]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+			return true
+		}
+	}
+	return strings.HasPrefix(p, "//")
 }
 
 // sourceMatches reports whether src should be considered, given the

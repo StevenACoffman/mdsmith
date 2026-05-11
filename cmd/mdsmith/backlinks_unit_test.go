@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,6 +47,11 @@ func TestResolveLinkTarget(t *testing.T) {
 		{"escapes root", "docs/api.md", "../../etc/passwd", ""},
 		{"absolute link", "docs/api.md", "/etc/passwd", ""},
 		{"absolute source", "/abs/docs/api.md", "guide.md", ""},
+		// Windows-style absolutes — path.IsAbs alone misses these.
+		{"drive letter link", "docs/api.md", "C:/Windows/system.md", ""},
+		{"drive letter source", "C:/docs/api.md", "guide.md", ""},
+		{"UNC link", "docs/api.md", "//server/share/file.md", ""},
+		{"UNC source", "//server/share/api.md", "guide.md", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -203,6 +209,21 @@ func TestCollectBacklinks_End2End(t *testing.T) {
 		require.Len(t, errs, 1)
 		assert.Contains(t, errs[0].Error(), "does-not-exist.md")
 	})
+
+	t.Run("local-anchor links are skipped", func(t *testing.T) {
+		// Source contains only a same-file anchor link, no cross-file
+		// reference to the target. linkgraph yields a LocalAnchor=true
+		// link; collectBacklinks must skip it without trying to
+		// resolve a path target.
+		anchorOnly := filepath.Join(root, "anchor-only.md")
+		require.NoError(t, os.WriteFile(anchorOnly,
+			[]byte("# Intro\n\nJump to [section](#section).\n\n## Section\n"), 0o644))
+		filesWithAnchor := append([]string{anchorOnly}, files...)
+		got, errs := collectBacklinks(filesWithAnchor, root, "docs/api.md", "", nil, 0)
+		assert.Empty(t, errs)
+		// Same three matches as before; anchor-only.md contributes nothing.
+		assert.Len(t, got, 3)
+	})
 }
 
 func TestValidateIncludePatterns(t *testing.T) {
@@ -251,4 +272,23 @@ func TestEmitBacklinks_LimitZeroNoCap(t *testing.T) {
 	code := emitBacklinks(&buf, records, "text", 0)
 	assert.Equal(t, 0, code)
 	assert.Equal(t, 5, strings.Count(buf.String(), "\n"))
+}
+
+// failingWriter is an io.Writer that returns an error on every Write
+// so tests can exercise emitBacklinks' write-error branches.
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, fmt.Errorf("simulated write failure")
+}
+
+func TestEmitBacklinks_TextWriteError(t *testing.T) {
+	records := []backlinkRecord{{Source: "a.md", Line: 1, Text: "t", Target: "x.md"}}
+	code := emitBacklinks(failingWriter{}, records, "text", 0)
+	assert.Equal(t, 2, code)
+}
+
+func TestEmitBacklinks_JSONWriteError(t *testing.T) {
+	code := emitBacklinks(failingWriter{}, []backlinkRecord{{Source: "a.md", Line: 1}}, "json", 0)
+	assert.Equal(t, 2, code)
 }

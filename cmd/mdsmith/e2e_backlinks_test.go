@@ -154,6 +154,38 @@ func TestE2E_Backlinks_JSON_EmptyResult(t *testing.T) {
 	assert.NotContains(t, stdout, "null")
 }
 
+func TestE2E_Backlinks_UnreadableSource_ExitsTwo(t *testing.T) {
+	// When every source file is too large to read, collectBacklinks
+	// reports an error per file and emits no records. Per the doc'd
+	// precedence (records → 0, runtime err → 2, clean empty → 1) the
+	// exit code must be 2, not 1.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".mdsmith.yml"),
+		[]byte("files:\n  - \"**/*.md\"\nrules:\n  cross-file-reference-integrity: false\n"), 0o644))
+	// 200 bytes of body — comfortably larger than the 10-byte cap.
+	src := "# Src\n\n[ref](target.md) " + strings.Repeat("x", 200) + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "src.md"), []byte(src), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "target.md"), []byte("# Target\n"), 0o644))
+
+	_, stderr, exitCode := runBinaryInDir(
+		t, dir, "", "backlinks", "--max-input-size", "10", "target.md")
+	require.Equal(t, 2, exitCode, "unreadable sources → runtime error → exit 2")
+	assert.Contains(t, stderr, "reading src.md")
+}
+
+func TestE2E_Backlinks_DiscoveryEmpty_ExitsOne(t *testing.T) {
+	// A workspace whose `files:` glob matches nothing should exit 1
+	// (no backlinks found) rather than crash.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".mdsmith.yml"),
+		[]byte("files:\n  - \"no-such-pattern/**/*.md\"\nrules: {}\n"), 0o644))
+
+	_, _, exitCode := runBinaryInDir(t, dir, "", "backlinks", "target.md")
+	require.Equal(t, 1, exitCode)
+}
+
 func TestE2E_Backlinks_FrontMatterLines_FileRelative(t *testing.T) {
 	// Regression for the body-vs-file-relative line bug: when the
 	// source file has front matter, the backlinks CLI must show the
