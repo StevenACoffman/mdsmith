@@ -41,7 +41,7 @@ const usageText = `Usage: mdsmith <command> [flags] [files...]
 Commands:
   check             Lint Markdown files (default when given file arguments)
   fix               Auto-fix lint issues in place
-  list              Select files by query (front matter or link graph)
+  list              Walk the workspace and emit matches (files or link records)
   help              Show help for rules and topics
   metrics           Show and rank shared Markdown metrics
   merge-driver      Git merge driver for regenerable sections

@@ -394,7 +394,7 @@ markdownlint fixes structural violations.
 
 mdsmith has the strongest cross-file and project-level
 features. The merge driver and regenerable sections are
-unique to mdsmith. The `query` subcommand
+unique to mdsmith. The `list query` subcommand
 ([plan 78][plan78]) selects files by a CUE expression
 over front matter (e.g.
 `mdsmith list query 'status: "✅"' plan/`), which no other
