@@ -124,11 +124,12 @@ func TestEmitBacklinks_UnknownFormat(t *testing.T) {
 	assert.Equal(t, 2, code)
 }
 
-// TestCollectBacklinks_End2End covers the path/anchor combinations the
-// plan's acceptance criteria call out: three sources, anchor scoping,
-// include filter, limit.
-func TestCollectBacklinks_End2End(t *testing.T) {
-	root := t.TempDir()
+// setupCollectBacklinksFixture creates a small workspace with three
+// distinct sources linking to docs/api.md so the end-to-end tests can
+// share one filesystem layout.
+func setupCollectBacklinksFixture(t *testing.T) (root string, files []string) {
+	t.Helper()
+	root = t.TempDir()
 	mkdir := func(rel string) {
 		require.NoError(t, os.MkdirAll(filepath.Join(root, rel), 0o755))
 	}
@@ -145,16 +146,25 @@ func TestCollectBacklinks_End2End(t *testing.T) {
 	// File that does NOT link to api.md.
 	write("docs/changelog.md", "# Changelog\n\n[plan](../plan/045_api-overhaul.md)\n")
 
-	files := []string{
+	files = []string{
 		filepath.Join(root, "docs/api.md"),
 		filepath.Join(root, "docs/changelog.md"),
 		filepath.Join(root, "docs/index.md"),
 		filepath.Join(root, "docs/sub/guide.md"),
 		filepath.Join(root, "plan/045_api-overhaul.md"),
 	}
+	return root, files
+}
+
+// TestCollectBacklinks_End2End covers the path/anchor combinations the
+// plan's acceptance criteria call out: three sources, anchor scoping,
+// include filter, limit.
+func TestCollectBacklinks_End2End(t *testing.T) {
+	root, files := setupCollectBacklinksFixture(t)
 
 	t.Run("three sources, no anchor", func(t *testing.T) {
-		got := collectBacklinks(files, root, "docs/api.md", "", nil, 0)
+		got, errs := collectBacklinks(files, root, "docs/api.md", "", nil, 0)
+		require.Empty(t, errs)
 		require.Len(t, got, 3)
 		assert.Equal(t, "docs/index.md", got[0].Source)
 		assert.Equal(t, "docs/sub/guide.md", got[1].Source)
@@ -162,20 +172,83 @@ func TestCollectBacklinks_End2End(t *testing.T) {
 	})
 
 	t.Run("anchor scopes to one source", func(t *testing.T) {
-		got := collectBacklinks(files, root, "docs/api.md", "authentication", nil, 0)
+		got, errs := collectBacklinks(files, root, "docs/api.md", "authentication", nil, 0)
+		require.Empty(t, errs)
 		require.Len(t, got, 1)
 		assert.Equal(t, "docs/sub/guide.md", got[0].Source)
 	})
 
 	t.Run("anchor with no hits returns empty", func(t *testing.T) {
-		got := collectBacklinks(files, root, "docs/api.md", "no-such-section", nil, 0)
+		got, errs := collectBacklinks(files, root, "docs/api.md", "no-such-section", nil, 0)
+		assert.Empty(t, errs)
 		assert.Empty(t, got)
 	})
 
 	t.Run("include filter excludes plan/", func(t *testing.T) {
-		got := collectBacklinks(files, root, "docs/api.md", "", []string{"docs/**"}, 0)
+		got, errs := collectBacklinks(files, root, "docs/api.md", "", []string{"docs/**"}, 0)
+		require.Empty(t, errs)
 		require.Len(t, got, 2)
 		assert.Equal(t, "docs/index.md", got[0].Source)
 		assert.Equal(t, "docs/sub/guide.md", got[1].Source)
 	})
+
+	t.Run("unreadable source surfaces as error", func(t *testing.T) {
+		// A path that does not exist on disk: ReadFileLimited fails;
+		// collectBacklinks captures the error rather than swallowing.
+		bad := filepath.Join(root, "does-not-exist.md")
+		filesWithBad := append([]string{bad}, files...)
+		got, errs := collectBacklinks(filesWithBad, root, "docs/api.md", "", nil, 0)
+		// The other files still contribute results.
+		assert.NotEmpty(t, got)
+		require.Len(t, errs, 1)
+		assert.Contains(t, errs[0].Error(), "does-not-exist.md")
+	})
+}
+
+func TestValidateIncludePatterns(t *testing.T) {
+	assert.NoError(t, validateIncludePatterns(nil))
+	assert.NoError(t, validateIncludePatterns([]string{"docs/**", "plan/*.md"}))
+	// `[` opens a character class that's never closed; doublestar
+	// would silently mismatch every path, so we reject it upfront.
+	err := validateIncludePatterns([]string{"["})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --include glob")
+}
+
+func TestWorkspaceRelativePath_EmptyRootDir(t *testing.T) {
+	// When rootDir is empty, the helper just strips a leading "./"
+	// and forwards the path through.
+	assert.Equal(t, "docs/api.md", workspaceRelativePath("./docs/api.md", ""))
+	assert.Equal(t, "docs/api.md", workspaceRelativePath("docs/api.md", ""))
+}
+
+// TestCollectBacklinks_SortStable verifies that two records from the
+// same source file are returned in line order (the secondary key in
+// the SliceStable comparator).
+func TestCollectBacklinks_SortStable(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "target.md"), []byte("# T\n"), 0o644))
+	// Two links to target.md from the SAME source: line 3 and line 5.
+	body := "# Src\n\nFirst [a](target.md), and\n\nsecond [b](target.md).\n"
+	require.NoError(t, os.WriteFile(filepath.Join(root, "src.md"), []byte(body), 0o644))
+
+	files := []string{filepath.Join(root, "src.md"), filepath.Join(root, "target.md")}
+	got, errs := collectBacklinks(files, root, "target.md", "", nil, 0)
+	require.Empty(t, errs)
+	require.Len(t, got, 2)
+	assert.Equal(t, "src.md", got[0].Source)
+	assert.Equal(t, "src.md", got[1].Source)
+	assert.Less(t, got[0].Line, got[1].Line, "same-source records sort by line")
+}
+
+func TestEmitBacklinks_LimitZeroNoCap(t *testing.T) {
+	// limit=0 means "no cap" — every record is emitted.
+	records := make([]backlinkRecord, 5)
+	for i := range records {
+		records[i] = backlinkRecord{Source: "a.md", Line: i + 1}
+	}
+	var buf bytes.Buffer
+	code := emitBacklinks(&buf, records, "text", 0)
+	assert.Equal(t, 0, code)
+	assert.Equal(t, 5, strings.Count(buf.String(), "\n"))
 }

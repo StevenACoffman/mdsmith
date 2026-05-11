@@ -113,3 +113,62 @@ func TestE2E_Backlinks_HelpFlag(t *testing.T) {
 	assert.Equal(t, 0, exitCode)
 	assert.Contains(t, stderr, "Usage: mdsmith backlinks")
 }
+
+func TestE2E_Backlinks_InvalidIncludeGlob_ExitsTwo(t *testing.T) {
+	dir := setupBacklinksWorkspace(t)
+	_, stderr, exitCode := runBinaryInDir(
+		t, dir, "", "backlinks", "--include", "[", "docs/api.md")
+	require.Equal(t, 2, exitCode, "invalid glob must exit 2, not silently match nothing")
+	assert.Contains(t, stderr, "invalid --include glob")
+}
+
+func TestE2E_Backlinks_TooManyArgs_ExitsTwo(t *testing.T) {
+	_, stderr, exitCode := runBinary(t, "", "backlinks", "a.md", "b.md")
+	require.Equal(t, 2, exitCode)
+	assert.Contains(t, stderr, "takes one target argument")
+}
+
+func TestE2E_Backlinks_AnchorOnlyTarget_ExitsTwo(t *testing.T) {
+	// "#anchor" alone has no file path; backlinks always require one.
+	_, stderr, exitCode := runBinary(t, "", "backlinks", "#anchor-only")
+	require.Equal(t, 2, exitCode)
+	assert.Contains(t, stderr, "target must include a file path")
+}
+
+func TestE2E_Backlinks_InvalidMaxInputSize_ExitsTwo(t *testing.T) {
+	dir := setupBacklinksWorkspace(t)
+	_, stderr, exitCode := runBinaryInDir(
+		t, dir, "", "backlinks", "--max-input-size", "garbage", "docs/api.md")
+	require.Equal(t, 2, exitCode)
+	assert.Contains(t, stderr, "max-input-size")
+}
+
+func TestE2E_Backlinks_JSON_EmptyResult(t *testing.T) {
+	dir := setupBacklinksWorkspace(t)
+	// A target that exists but has no incoming links.
+	stdout, _, exitCode := runBinaryInDir(
+		t, dir, "", "backlinks", "--format", "json", "docs/changelog.md")
+	require.Equal(t, 1, exitCode, "no matches → exit 1")
+	// Stable shape: `[]`, never `null`.
+	assert.Contains(t, stdout, "[]")
+	assert.NotContains(t, stdout, "null")
+}
+
+func TestE2E_Backlinks_FrontMatterLines_FileRelative(t *testing.T) {
+	// Regression for the body-vs-file-relative line bug: when the
+	// source file has front matter, the backlinks CLI must show the
+	// file-relative line number, not the body-relative one.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".mdsmith.yml"),
+		[]byte("files:\n  - \"**/*.md\"\nrules:\n  cross-file-reference-integrity: false\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "target.md"),
+		[]byte("# Target\n"), 0o644))
+	// 3 lines of front matter, blank, heading, blank, link → line 6.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "src.md"),
+		[]byte("---\ntitle: src\n---\n# Src\n\nSee [it](target.md).\n"), 0o644))
+
+	stdout, _, exitCode := runBinaryInDir(t, dir, "", "backlinks", "target.md")
+	require.Equal(t, 0, exitCode)
+	assert.Contains(t, stdout, "src.md:6:")
+}
