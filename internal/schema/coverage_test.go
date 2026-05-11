@@ -17,8 +17,7 @@ func TestParseInline_RejectsNonIntegerFloat(t *testing.T) {
 	raw := map[string]any{
 		"sections": []any{
 			map[string]any{
-				"heading": "Repeating",
-				"repeats": true,
+				"heading": "Bounded",
 				"min":     1.5,
 			},
 		},
@@ -34,8 +33,7 @@ func TestParseInline_AcceptsIntegerFloat(t *testing.T) {
 	raw := map[string]any{
 		"sections": []any{
 			map[string]any{
-				"heading": "Repeating",
-				"repeats": true,
+				"heading": "Bounded",
 				"min":     1.0,
 				"max":     3.0,
 			},
@@ -46,6 +44,26 @@ func TestParseInline_AcceptsIntegerFloat(t *testing.T) {
 	require.Len(t, sch.Sections, 1)
 	assert.Equal(t, 1, sch.Sections[0].Min)
 	assert.Equal(t, 3, sch.Sections[0].Max)
+}
+
+// TestParseInline_RejectsRepeatsUntilImplemented locks in the
+// reviewer's preference: until plan 142 ships repeating-pattern
+// validation, `repeats: true` is rejected at parse time so users
+// don't see spurious "unexpected section" diagnostics from extra
+// matches.
+func TestParseInline_RejectsRepeatsUntilImplemented(t *testing.T) {
+	raw := map[string]any{
+		"sections": []any{
+			map[string]any{
+				"heading": "Step {n}",
+				"repeats": true,
+			},
+		},
+	}
+	_, err := ParseInline(raw, "kind x")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "repeats")
+	assert.Contains(t, err.Error(), "plan 142")
 }
 
 func TestParseInline_RejectsEmptyHeading(t *testing.T) {
@@ -863,6 +881,34 @@ func TestIsCUEIdent_EmptyAndDigitFirst(t *testing.T) {
 	assert.False(t, isCUEIdent("foo-bar"))
 	assert.True(t, isCUEIdent("foo_bar"))
 	assert.True(t, isCUEIdent("foo123"))
+}
+
+// TestValidate_OpenScopeFlagsLateListedScope regresses a Copilot
+// finding: schema [A(req), B(opt), C(req)] with doc A → C → B
+// previously silently accepted B because the open trailing loop
+// only flagged unexpected when closed=true. The leftover-listed
+// check now surfaces B as out-of-order regardless of closed.
+func TestValidate_OpenScopeFlagsLateListedScope(t *testing.T) {
+	raw := map[string]any{
+		"sections": []any{
+			map[string]any{"heading": "A", "required": true},
+			map[string]any{"heading": "B", "required": false},
+			map[string]any{"heading": "C", "required": true},
+		},
+	}
+	sch, err := ParseInline(raw, "kind x")
+	require.NoError(t, err)
+	doc := newDocFile(t, "doc.md",
+		"# T\n\n## A\n\nx\n\n## C\n\ny\n\n## B\n\nz\n")
+	diags := Validate(doc, sch, nil, false, makeDiagForTest)
+	var found bool
+	for _, d := range diags {
+		if d.Message == `section "## B" out of order: expected before this position` {
+			found = true
+		}
+	}
+	assert.True(t, found,
+		"late-arriving listed scope must surface out-of-order in open scopes too")
 }
 
 // TestValidate_OptionalScopeNotOutOfOrder regresses a Copilot

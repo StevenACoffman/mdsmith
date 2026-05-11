@@ -139,23 +139,65 @@ func validateScopes(
 		}
 	}
 
-	// Handle remaining doc headings: in a closed scope without a
-	// trailing wildcard, the leftovers are flagged; otherwise they
-	// are skipped past so the caller (a parent scope) does not see
-	// them again.
+	// Handle remaining doc headings. A leftover that matches an
+	// unclaimed listed scope is flagged as out-of-order regardless
+	// of open/closed — the user listed the section, so its position
+	// is still a constraint. Other leftovers depend on closed:
+	// flagged as unexpected in closed scopes, silently consumed in
+	// open ones.
 	for docIdx < len(docHeads) {
 		dh := docHeads[docIdx]
 		if dh.Level < expectedLevel {
 			break
 		}
-		if dh.Level == expectedLevel && closed && !allowExtra {
-			diags = append(diags, mkDiag(f.Path, dh.Line,
-				fmt.Sprintf("unexpected section %q",
-					formatHeading(dh.Level, dh.Text))))
+		if dh.Level == expectedLevel {
+			diags = append(diags, leftoverDiag(
+				f, dh, scopes, claimed, expectedLevel, closed, allowExtra, mkDiag)...)
 		}
 		docIdx++
 	}
 	return docIdx, diags
+}
+
+// leftoverDiag returns diagnostics for a doc heading that survived
+// the matchScope iteration. If it matches an unclaimed listed scope
+// (a section the user explicitly named), emit "out of order" and
+// mark that scope claimed. Otherwise, emit "unexpected" only when
+// the parent is closed and no wildcard tolerates the slot.
+func leftoverDiag(
+	f *lint.File, dh DocHeading, scopes []Scope, claimed map[int]bool,
+	expectedLevel int, closed, allowExtra bool, mkDiag MakeDiag,
+) []lint.Diagnostic {
+	if idx := unclaimedListedScope(scopes, dh, claimed); idx >= 0 {
+		claimed[idx] = true
+		return []lint.Diagnostic{mkDiag(f.Path, dh.Line,
+			fmt.Sprintf(
+				"section %q out of order: expected before this position",
+				formatHeading(dh.Level, dh.Text)))}
+	}
+	if !allowExtra && closed {
+		return []lint.Diagnostic{mkDiag(f.Path, dh.Line,
+			fmt.Sprintf("unexpected section %q",
+				formatHeading(dh.Level, dh.Text)))}
+	}
+	return nil
+}
+
+// unclaimedListedScope returns the index of the first unclaimed
+// non-wildcard scope whose text matches dh, or -1 when no listed
+// scope is a candidate.
+func unclaimedListedScope(
+	scopes []Scope, dh DocHeading, claimed map[int]bool,
+) int {
+	for i, sc := range scopes {
+		if claimed[i] || sc.Wildcard {
+			continue
+		}
+		if scopeMatchesHeading(sc, dh) {
+			return i
+		}
+	}
+	return -1
 }
 
 func buildRequiredByText(scopes []Scope) map[string][]int {

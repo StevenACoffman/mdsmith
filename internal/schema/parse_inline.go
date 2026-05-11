@@ -201,6 +201,13 @@ func parseInlineScopeEntry(entry any, path string) (Scope, error) {
 		return Scope{}, fmt.Errorf(
 			"%s: non-wildcard scope must set a non-empty heading", path)
 	}
+	if sc.Repeats {
+		return Scope{}, fmt.Errorf(
+			"%s: `repeats:` is parsed but not yet enforced (tracked on "+
+				"plan 142); remove the key until repeating-pattern "+
+				"validation lands so extras are not flagged as unexpected",
+			path)
+	}
 	return sc, nil
 }
 

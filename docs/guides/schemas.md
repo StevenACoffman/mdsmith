@@ -75,8 +75,8 @@ listed sections' order.
 
 Levels come from depth. Root `sections:` entries are
 H2; nested `sections:` lists are H3, H4, …. A runbook
-that wants Diagnosis → Step (repeatable) → Check /
-Expected expresses that as:
+that wants Diagnosis → Step → Check / Expected
+expresses that as:
 
 ```yaml
 sections:

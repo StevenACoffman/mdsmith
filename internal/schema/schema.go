@@ -120,9 +120,14 @@ type Scope struct {
 	Wildcard bool
 
 	// Rules carries per-scope rule-config overrides. Each entry maps
-	// a rule name to a settings map that deep-merges over the file's
-	// effective rule config when the validator descends into this
-	// scope's subtree.
+	// a rule name to a settings map. The MDS020 walker re-runs each
+	// named rule with these settings against the document and
+	// filters diagnostics to the scope's heading range.
+	//
+	// Today the override stacks on the rule's defaults, not the
+	// file's full effective config (defaults → kinds → file globs →
+	// scope). Threading the full merge through the engine is a
+	// tracked follow-up on plan 146; see docs/guides/schemas.md.
 	Rules map[string]map[string]any
 }
 
