@@ -251,6 +251,43 @@ func TestEffectiveKindsForNoCfgNoFrontMatterKind(t *testing.T) {
 	assert.Nil(t, got)
 }
 
+func TestEffectiveKindsForFieldsPresentSelector(t *testing.T) {
+	t.Parallel()
+	// A config that uses fields-present: triggers the ParseFrontMatterFields
+	// branch in effectiveKindsFor; the front-matter mapping must satisfy
+	// the entry for the kind to land on the file.
+	cfg := &config.Config{
+		Kinds: map[string]config.KindBody{"task": {}},
+		KindAssignment: []config.KindAssignmentEntry{
+			{FieldsPresent: []string{"status", "priority"}, Kinds: []string{"task"}},
+		},
+	}
+	got := effectiveKindsFor(cfg, "a.md", []byte(
+		"---\nstatus: open\npriority: high\n---\n# A\n"))
+	assert.Contains(t, got, "task")
+
+	// A file missing one of the required fields should not get the kind.
+	got = effectiveKindsFor(cfg, "a.md", []byte("---\nstatus: open\n---\n# A\n"))
+	assert.NotContains(t, got, "task")
+}
+
+// effectiveKindsFor swallows ParseFrontMatterFields errors so a file with
+// malformed front matter (a YAML sequence in this case) still returns the
+// kinds it can resolve — the LSP index never panics or surfaces an error
+// from indexing.
+func TestEffectiveKindsForFieldsPresentParseErrorSwallowed(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Kinds: map[string]config.KindBody{"task": {}},
+		KindAssignment: []config.KindAssignmentEntry{
+			{FieldsPresent: []string{"status"}, Kinds: []string{"task"}},
+		},
+	}
+	got := effectiveKindsFor(cfg, "a.md", []byte("---\n- not\n- a\n- mapping\n---\n# A\n"))
+	assert.NotContains(t, got, "task",
+		"unparseable FM yields no fields, so the entry cannot match")
+}
+
 func TestEffectiveKindsForScalarKind(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()

@@ -122,3 +122,60 @@ func TestParseFrontMatterKinds(t *testing.T) {
 		})
 	}
 }
+
+func TestParseFrontMatterFields(t *testing.T) {
+	t.Run("returns parsed mapping", func(t *testing.T) {
+		prefix, _ := StripFrontMatter([]byte("---\nstatus: open\nid: 7\n---\n# H\n"))
+		got, err := ParseFrontMatterFields(prefix)
+		require.NoError(t, err)
+		assert.Equal(t, "open", got["status"])
+		assert.Equal(t, 7, got["id"])
+	})
+
+	t.Run("null value preserved", func(t *testing.T) {
+		prefix, _ := StripFrontMatter([]byte("---\nstatus: null\n---\n"))
+		got, err := ParseFrontMatterFields(prefix)
+		require.NoError(t, err)
+		v, ok := got["status"]
+		require.True(t, ok, "key should be present")
+		assert.Nil(t, v, "null YAML value decodes to nil")
+	})
+
+	t.Run("nil-result inputs return nil,nil", func(t *testing.T) {
+		cases := map[string]string{
+			"no front matter":    "",
+			"empty front matter": "---\n---\n# H\n",
+			"explicit null":      "---\nnull\n---\n",
+		}
+		for name, src := range cases {
+			t.Run(name, func(t *testing.T) {
+				prefix, _ := StripFrontMatter([]byte(src))
+				got, err := ParseFrontMatterFields(prefix)
+				require.NoError(t, err)
+				assert.Nil(t, got)
+			})
+		}
+	})
+
+	t.Run("rejects invalid payloads", func(t *testing.T) {
+		cases := map[string]struct {
+			src     string
+			wantMsg string
+		}{
+			"yaml aliases":     {"---\nbase: &a x\nkey: *a\n---\n", ""},
+			"scalar payload":   {"---\nfoo\n---\n", "mapping"},
+			"sequence payload": {"---\n- a\n- b\n---\n", "mapping"},
+			"non-string keys":  {"---\n1: foo\n---\n", "keys must be strings"},
+		}
+		for name, tc := range cases {
+			t.Run(name, func(t *testing.T) {
+				prefix, _ := StripFrontMatter([]byte(tc.src))
+				_, err := ParseFrontMatterFields(prefix)
+				require.Error(t, err)
+				if tc.wantMsg != "" {
+					assert.Contains(t, err.Error(), tc.wantMsg)
+				}
+			})
+		}
+	})
+}

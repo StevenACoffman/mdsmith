@@ -247,15 +247,33 @@ func runKindsPath(stdout io.Writer, args []string) int {
 	return 0
 }
 
-// readFrontMatterKinds reads a file and parses its front-matter kinds: list.
-// Returns nil kinds when the file has no front matter or no kinds: field.
-func readFrontMatterKinds(path string, maxBytes int64) ([]string, error) {
+// readFrontMatter reads a file and returns both the parsed kinds list and
+// the full front-matter mapping, the latter feeding the kind-assignment
+// `fields-present:` selector. The full-mapping decode runs only when
+// `config.NeedsFieldsForFile(cfg, path)` returns true — i.e. when at
+// least one kind-assignment entry with `fields-present:` could match
+// this path (an entry without a glob, or one whose glob matches).
+// Files outside every fields-present scope keep the kinds-only fast
+// path's leniency for FM YAML errors that decode would otherwise
+// surface.
+func readFrontMatter(cfg *config.Config, path string, maxBytes int64) ([]string, map[string]any, error) {
 	data, err := lint.ReadFileLimited(path, maxBytes)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	prefix, _ := lint.StripFrontMatter(data)
-	return lint.ParseFrontMatterKinds(prefix)
+	kinds, err := lint.ParseFrontMatterKinds(prefix)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !config.NeedsFieldsForFile(cfg, path) {
+		return kinds, nil, nil
+	}
+	fields, err := lint.ParseFrontMatterFields(prefix)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parsing front matter: %w", err)
+	}
+	return kinds, fields, nil
 }
 
 // resolveFileFromCLI loads config, parses the file's front matter for
@@ -273,13 +291,14 @@ func resolveFileFromCLI(path string) (*config.FileResolution, *config.Config, in
 	}
 
 	var fmKinds []string
+	var fmFields map[string]any
 	if frontMatterEnabled(cfg) {
 		maxBytes, err := resolveMaxInputBytes(cfg, "")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "mdsmith: %v\n", err)
 			return nil, nil, 2
 		}
-		fmKinds, err = readFrontMatterKinds(path, maxBytes)
+		fmKinds, fmFields, err = readFrontMatter(cfg, path, maxBytes)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "mdsmith: reading %s: %v\n", path, err)
 			return nil, nil, 2
@@ -304,7 +323,7 @@ func resolveFileFromCLI(path string) (*config.FileResolution, *config.Config, in
 		}
 	}
 
-	return config.ResolveFile(cfg, path, fmKinds), cfg, 0
+	return config.ResolveFile(cfg, path, fmKinds, fmFields), cfg, 0
 }
 
 // runKindsResolve prints the resolved kind list and merged rule config
