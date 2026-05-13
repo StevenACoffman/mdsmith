@@ -743,12 +743,111 @@ func TestBracketPairsStrayClosingBracket(t *testing.T) {
 	require.Len(t, pairs, 1)
 }
 
-// TestMatchingPairNoMatchReturnsFalse covers the no-match return.
-func TestMatchingPairNoMatchReturnsFalse(t *testing.T) {
+// TestRefDefHelperShapes drives every branch of the ref-def
+// destination helpers added for the heading-rename companion
+// pass.
+func TestRefDefHelperShapes(t *testing.T) {
 	t.Parallel()
-	pairs := []bracketPair{{open: 10, close: 20}}
-	first, _ := matchingPair(pairs, 0, 5)
-	assert.Equal(t, -1, first.open)
+	// refDefColonOffset
+	assert.Equal(t, 5, refDefColonOffset([]byte(`[abc]: url`)))
+	assert.Equal(t, 7, refDefColonOffset([]byte(`  [abc]: url`)))
+	assert.Equal(t, -1, refDefColonOffset([]byte(`plain text`)))
+	assert.Equal(t, -1, refDefColonOffset([]byte(`[no-close`)))
+	assert.Equal(t, -1, refDefColonOffset([]byte(`[abc] no colon`)))
+	assert.Equal(t, -1, refDefColonOffset([]byte(`    [over]: x`)))
+
+	// refDefDestRange — skip leading whitespace, stop at next space.
+	start, end := refDefDestRange([]byte(`[a]:   url more`), 4)
+	assert.Equal(t, "url", string([]byte(`[a]:   url more`)[start:end]))
+	// All-whitespace tail returns empty range at end.
+	start, end = refDefDestRange([]byte(`[a]:   `), 4)
+	assert.Equal(t, start, end)
+
+	// refDefParseTarget happy + error cases.
+	tgt, ok := refDefParseTarget("./b.md#sec")
+	require.True(t, ok)
+	assert.Equal(t, "./b.md", tgt.path)
+	assert.Equal(t, "sec", tgt.fragment)
+	tgt, ok = refDefParseTarget("#sec")
+	require.True(t, ok)
+	assert.True(t, tgt.localAnchor)
+	_, ok = refDefParseTarget("")
+	assert.False(t, ok)
+	_, ok = refDefParseTarget("//host/x")
+	assert.False(t, ok)
+	_, ok = refDefParseTarget("https://example.com")
+	assert.False(t, ok)
+	_, ok = refDefParseTarget("%")
+	assert.False(t, ok)
+	_, ok = refDefParseTarget("   ")
+	assert.False(t, ok)
+	// Empty path AND empty fragment.
+	_, ok = refDefParseTarget("?q=v")
+	assert.False(t, ok)
+
+	// refDefDestPointsAt happy + mismatches.
+	assert.True(t, refDefDestPointsAt(
+		[]byte(`./a.md#setup`), "b.md", "a.md", "setup"))
+	assert.False(t, refDefDestPointsAt(
+		[]byte(`./a.md#other`), "b.md", "a.md", "setup"))
+	assert.False(t, refDefDestPointsAt(
+		[]byte(`./other.md#setup`), "b.md", "a.md", "setup"))
+	// Local anchor in a def whose host file matches headingFile.
+	assert.True(t, refDefDestPointsAt(
+		[]byte(`#setup`), "a.md", "a.md", "setup"))
+	// Local anchor in the wrong host file.
+	assert.False(t, refDefDestPointsAt(
+		[]byte(`#setup`), "b.md", "a.md", "setup"))
+	// Garbage destination.
+	assert.False(t, refDefDestPointsAt(
+		[]byte(`%`), "b.md", "a.md", "setup"))
+	// Percent-escaped anchor still matches the slugified form.
+	assert.True(t, refDefDestPointsAt(
+		[]byte(`./a.md#Docs%20API`), "b.md", "a.md", "docs-api"))
+}
+
+// TestRefDefDestEditForMatchSkipsBadInputs covers
+// refDefDestEditForMatch's defensive returns: out-of-range
+// fileLine, malformed bracket shape, empty dest, and the
+// no-`#` fragment path.
+func TestRefDefDestEditForMatchSkipsBadInputs(t *testing.T) {
+	t.Parallel()
+	body := []byte(`[a]: ./b.md#sec`)
+	// Out-of-range fileLine (lines slice has 1 entry but match
+	// points past it).
+	short := [][]byte{[]byte("# h")}
+	_, ok := refDefDestEditForMatch(body, short, 10, []int{0, len(body), 1, 2},
+		"a.md", "b.md", "sec", "new")
+	assert.False(t, ok)
+	// Row that the regex matched but doesn't contain a valid
+	// `[label]:` (synthetic mismatch).
+	lines := [][]byte{[]byte("plain")}
+	_, ok = refDefDestEditForMatch(body, lines, 0, []int{0, 5, 1, 2},
+		"a.md", "b.md", "sec", "new")
+	assert.False(t, ok)
+	// Empty destination after `:`.
+	lines = [][]byte{[]byte("[a]:   ")}
+	_, ok = refDefDestEditForMatch([]byte("[a]:   "), lines, 0,
+		[]int{0, 7, 1, 2}, "a.md", "b.md", "sec", "new")
+	assert.False(t, ok)
+	// Destination has no `#` (so no fragment to rewrite).
+	lines = [][]byte{[]byte("[a]: ./b.md")}
+	_, ok = refDefDestEditForMatch([]byte("[a]: ./b.md"), lines, 0,
+		[]int{0, 11, 1, 2}, "a.md", "b.md", "sec", "new")
+	assert.False(t, ok)
+}
+
+// TestAppendRefDefDestEditsForHeadingSkipsUnresolvable covers
+// the resolveURIAndSource fail branch by planting a synthetic
+// index entry for a file the server can't read.
+func TestAppendRefDefDestEditsForHeadingSkipsUnresolvable(t *testing.T) {
+	t.Parallel()
+	h, _, _ := rootedHarness(t, map[string]string{})
+	idx := h.srv.ensureIndex()
+	idx.UpdateWithKinds("ghost.md", []byte("[setup]: ./a.md#setup\n"), nil)
+	changes := map[string][]textEdit{}
+	h.srv.appendRefDefDestEditsForHeading(changes, idx, "a.md", "setup", "config")
+	assert.Empty(t, changes)
 }
 
 // TestValidRefDefMatchesSkipsRegexHitGoldmarkRefused covers the
@@ -786,13 +885,49 @@ func TestAppendAnchorEditsForHeadingDropsUnresolvableEdge(t *testing.T) {
 	assert.Empty(t, changes)
 }
 
-// TestRenameLinkRefSkipsMultiLineUse verifies that a
-// `[text\nwrap][label]` reference whose text spans two lines
-// doesn't crash refUseEdit — the line-local bracket walker
-// returns no matching pair, refUseEdit's targetPairForRefUse
-// guard fires, and the link is silently skipped while the def
-// + any single-line uses still rewrite cleanly.
-func TestRenameLinkRefSkipsMultiLineUse(t *testing.T) {
+// TestRenameHeadingRewritesRefDefDestinations verifies the
+// ref-def-destination companion pass. A `[setup]: ./a.md#setup`
+// def in b.md isn't recorded as an edge in the index (refs are
+// symbols, not edges) — without the dedicated walk, the def
+// would still point at the old slug after renaming the
+// heading.
+func TestRenameHeadingRewritesRefDefDestinations(t *testing.T) {
+	t.Parallel()
+	srcA := "# Alpha\n\n## Setup\n\nbody\n"
+	srcB := "# Beta\n\n[setup]: ./a.md#setup\n[local]: #setup\n"
+	h, _, rootURI := rootedHarness(t, map[string]string{"a.md": srcA, "b.md": srcB})
+	uriA := rootURI + "/a.md"
+	uriB := rootURI + "/b.md"
+	for _, d := range []struct{ uri, src string }{{uriA, srcA}, {uriB, srcB}} {
+		h.notify("textDocument/didOpen", didOpenTextDocumentParams{
+			TextDocument: textDocumentItem{URI: d.uri, LanguageID: "markdown", Version: 1, Text: d.src},
+		})
+		_ = h.awaitNotification("textDocument/publishDiagnostics", 5*time.Second)
+	}
+	raw, errResp := h.request("textDocument/rename", renameParams{
+		TextDocument: textDocumentIdentifier{URI: uriA},
+		Position:     Position{Line: 2, Character: 4},
+		NewName:      "Configuration",
+	})
+	require.Nil(t, errResp)
+	var edit workspaceEdit
+	require.NoError(t, json.Unmarshal(raw, &edit))
+	require.Contains(t, edit.Changes, uriB)
+	// b.md's `[setup]: ./a.md#setup` def rewrites to
+	// `#configuration`; the `[local]: #setup` def points at the
+	// non-renamed file b.md so it stays untouched.
+	bEdits := edit.Changes[uriB]
+	require.Len(t, bEdits, 1)
+	assert.Equal(t, "configuration", bEdits[0].NewText)
+}
+
+// TestRenameLinkRefMultiLineUseRewritesLabel verifies that a
+// `[wrap\ntext][docs]` reference whose text spans two lines
+// still rewrites its label. labelBoundsInBody locates the
+// trailing `[label]` from body offsets rather than line-local
+// bracket pairs, so the multi-line text doesn't block the
+// rewrite.
+func TestRenameLinkRefMultiLineUseRewritesLabel(t *testing.T) {
 	t.Parallel()
 	src := "# T\n\nA [wrap\ntext][docs] B.\n\nC [docs] D.\n\n[docs]: https://x\n"
 	h, _, rootURI := rootedHarness(t, map[string]string{"a.md": src})
@@ -803,60 +938,66 @@ func TestRenameLinkRefSkipsMultiLineUse(t *testing.T) {
 	_ = h.awaitNotification("textDocument/publishDiagnostics", 5*time.Second)
 	raw, errResp := h.request("textDocument/rename", renameParams{
 		TextDocument: textDocumentIdentifier{URI: uri},
-		// Cursor on `[docs]: …` (line 8, 1-based) → LSP line 7.
-		Position: Position{Line: 7, Character: 2},
-		NewName:  "manual",
+		Position:     Position{Line: 7, Character: 2},
+		NewName:      "manual",
 	})
 	require.Nil(t, errResp)
 	var edit workspaceEdit
 	require.NoError(t, json.Unmarshal(raw, &edit))
 	require.Contains(t, edit.Changes, uri)
-	// Multi-line use is skipped; def + single-line shortcut use
-	// (2 edits) still apply.
-	require.NotEmpty(t, edit.Changes[uri])
+	// Def + multi-line full ref + single-line shortcut = 3 edits.
+	require.Len(t, edit.Changes[uri], 3)
 	for _, e := range edit.Changes[uri] {
-		// No edit should land on the wrap line (line 2,
-		// 0-based) — that's the multi-line use's first line.
-		assert.NotEqual(t, 2, e.Range.Start.Line)
+		assert.Equal(t, "manual", e.NewText)
 	}
 }
 
-// TestTargetPairForRefUseShapes covers every documented branch
-// of the helper: invalid first pair, full ref with missing
-// trailing pair, full ref with valid trailing pair, shortcut /
-// collapsed routing through the leading pair.
-func TestTargetPairForRefUseShapes(t *testing.T) {
+// TestLabelBoundsInBodyShapes covers every documented branch of
+// the body-offset label resolver: full ref happy path, missing
+// `]` after text, missing `[` after `]`, unterminated label,
+// shortcut/collapsed with valid bracketing, and shortcut/
+// collapsed where the leading `[` isn't right before textStart.
+func TestLabelBoundsInBodyShapes(t *testing.T) {
 	t.Parallel()
-	bad := bracketPair{open: -1, close: -1}
-	zeroWidth := bracketPair{open: 5, close: 5}
-	good1 := bracketPair{open: 0, close: 5}
-	good2 := bracketPair{open: 6, close: 13}
-
-	// First pair invalid → not ok.
-	_, ok := targetPairForRefUse(bad, good2, ast.ReferenceLinkFull)
-	assert.False(t, ok)
-	// First pair is zero-width → not ok.
-	_, ok = targetPairForRefUse(zeroWidth, good2, ast.ReferenceLinkFull)
-	assert.False(t, ok)
-	// Full ref but second is missing → not ok.
-	_, ok = targetPairForRefUse(good1, bad, ast.ReferenceLinkFull)
-	assert.False(t, ok)
-	// Full ref with a zero-width second → not ok.
-	_, ok = targetPairForRefUse(good1, zeroWidth, ast.ReferenceLinkFull)
-	assert.False(t, ok)
-	// Full ref with both valid → returns the trailing pair.
-	got, ok := targetPairForRefUse(good1, good2, ast.ReferenceLinkFull)
+	// Full ref `[t][docs]`: text "t" at offset 1, textEnd=2.
+	body := []byte(`[t][docs]`)
+	start, end, ok := labelBoundsInBody(body, 1, 2, ast.ReferenceLinkFull)
 	require.True(t, ok)
-	assert.Equal(t, good2, got)
-	// Shortcut routes through the leading pair.
-	got, ok = targetPairForRefUse(good1, bad, ast.ReferenceLinkShortcut)
+	assert.Equal(t, "docs", string(body[start:end]))
+	// Full but trailing `[` missing.
+	body = []byte(`[t] docs`)
+	_, _, ok = labelBoundsInBody(body, 1, 2, ast.ReferenceLinkFull)
+	assert.False(t, ok)
+	// Full but unterminated label.
+	body = []byte(`[t][docs`)
+	_, _, ok = labelBoundsInBody(body, 1, 2, ast.ReferenceLinkFull)
+	assert.False(t, ok)
+	// Full but the byte at textEnd isn't `]`.
+	body = []byte(`[t (docs)`)
+	_, _, ok = labelBoundsInBody(body, 1, 2, ast.ReferenceLinkFull)
+	assert.False(t, ok)
+	// Shortcut `[docs]`: text "docs" at offset 1, textEnd=5.
+	body = []byte(`[docs]`)
+	start, end, ok = labelBoundsInBody(body, 1, 5, ast.ReferenceLinkShortcut)
 	require.True(t, ok)
-	assert.Equal(t, good1, got)
-	// Collapsed also routes through the leading pair (empty
-	// trailing `[]` is fine).
-	got, ok = targetPairForRefUse(good1, zeroWidth, ast.ReferenceLinkCollapsed)
+	assert.Equal(t, "docs", string(body[start:end]))
+	// Shortcut with textStart at byte 0 (no leading `[`).
+	body = []byte(`docs]`)
+	_, _, ok = labelBoundsInBody(body, 0, 4, ast.ReferenceLinkShortcut)
+	assert.False(t, ok)
+	// Shortcut where the leading byte isn't `[`.
+	body = []byte(`(docs]`)
+	_, _, ok = labelBoundsInBody(body, 1, 5, ast.ReferenceLinkShortcut)
+	assert.False(t, ok)
+	// Shortcut where the byte at textEnd isn't `]`.
+	body = []byte(`[docs `)
+	_, _, ok = labelBoundsInBody(body, 1, 5, ast.ReferenceLinkShortcut)
+	assert.False(t, ok)
+	// Full ref label with `\]` escape inside the label.
+	body = []byte(`[t][doc\]s]`)
+	start, end, ok = labelBoundsInBody(body, 1, 2, ast.ReferenceLinkFull)
 	require.True(t, ok)
-	assert.Equal(t, good1, got)
+	assert.Equal(t, `doc\]s`, string(body[start:end]))
 }
 
 // TestBracketPairsHandlesNestedBrackets verifies that the

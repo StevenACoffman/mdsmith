@@ -105,11 +105,7 @@ Extend linkgraph with the small surface the index needs
 on top of `ExtractLinks`:
 
 - `DirectiveEdge` — a typed record for
-  `<?include?>` / `<?build?>` / `<?catalog?>` targets,
-  with explicit catalog handling (no empty-`TargetFile`
-  placeholder; catalog matches expand inside the
-  extractor when a workspace `fs.FS` is supplied, or
-  return a typed `Unresolved` marker otherwise).
+  `<?include?>` / `<?build?>` / `<?catalog?>` targets.
 - `ExtractDirectives(f *lint.File) []DirectiveEdge` to
   match `ExtractLinks`.
 
@@ -117,6 +113,60 @@ The index's `EdgeKind` collapses to
 `{LinkAnchor, LinkFile, LinkRef, DirectiveInclude,
 DirectiveBuild, DirectiveCatalog}` — the same labels,
 just sourced from linkgraph.
+
+### Catalog edge representation
+
+A `<?catalog?>` directive references a glob, not a fixed
+file. The extractor needs to decide what shape an
+unresolved glob takes. Three options:
+
+| Option                              | Perf                                              | Features                                            | Correctness                                                      |
+|-------------------------------------|---------------------------------------------------|-----------------------------------------------------|------------------------------------------------------------------|
+| (1) Expand globs inside extractor   | O(globs × files); needs file list at extract time | Catalog targets show up everywhere automatically    | Snapshot-only; stale after file add/delete                       |
+| (2) Typed `Unresolved` sentinel     | O(1); no cross-file work                          | Callers expand on demand via `linkgraph.Expand`     | Honest "we don't know targets yet"; same expansion everywhere    |
+| (3) Empty `TargetFile` (status quo) | O(1)                                              | Same as (2) but ambiguous with "same-file" semantic | Forced plan 151 to special-case the empty form in `BacklinksFor` |
+
+**Decision: option 2.** The per-file extractor must
+stay self-contained — no workspace walks during
+extraction (see the next section) — so option 1 is out.
+The typed sentinel removes the empty-`TargetFile`
+ambiguity that bit `BacklinksFor` in plan 151. Add a
+`linkgraph.ExpandCatalog(globs, files []string)` helper
+for callers that need the resolved list.
+
+### Per-file extractor performance
+
+The extractor takes a single `*lint.File` plus a
+read-only `Workspace` value (root path, file list,
+configured globs). It returns `(links, directives)` and
+touches no global state. Constraints:
+
+- No file reads during extraction — the caller hands in
+  whatever bytes the extractor needs.
+- No workspace traversal during extraction — even
+  catalog expansion lives outside (see option 2 above).
+- No mutexes / global maps — extraction is pure
+  given its inputs.
+
+This shape enables two execution modes from one code
+path:
+
+1. **Sequential indexing** — the LSP server's
+   `ensureIndex` walks the workspace once, calls the
+   extractor per file, and inserts into the in-memory
+   graph. No coordination overhead.
+2. **Parallel indexing** — the workspace walker fans
+   out across worker goroutines, each running the
+   extractor on a different file. Results land on a
+   channel that a single collector drains into the
+   graph map. Because each extraction is pure, the
+   only contention is the final map insert.
+
+Benchmarks land in
+[`internal/lsp/index/bench_test.go`](../internal/lsp/index/bench_test.go).
+The acceptance criteria includes a parallel-build
+benchmark showing >= 2× speedup on a 1 000-file
+workspace with `GOMAXPROCS >= 4`.
 
 ### Migration steps
 
@@ -207,21 +257,25 @@ just sourced from linkgraph.
       diagnostic-message edits.
 - [ ] `mdsmith list backlinks` E2E test passes
       byte-for-byte against the pre-change fixture set.
+- [ ] `linkgraph.ExpandCatalog(globs, files)` exists
+      and is covered by the linkgraph test suite.
+- [ ] Catalog edges use the typed `Unresolved` sentinel
+      everywhere; the empty-`TargetFile` placeholder is
+      gone from the index.
+- [ ] Per-file extraction is pure (no file reads, no
+      workspace walk inside it); the index's
+      `Workspace` value carries everything the
+      extractor needs.
+- [ ] A parallel `BuildIndex` benchmark in
+      [`internal/lsp/index/bench_test.go`](../internal/lsp/index/bench_test.go)
+      shows >= 2× speedup over sequential on a 1 000-file
+      workspace with `GOMAXPROCS >= 4`.
 - [ ] All tests pass: `go test ./...`.
 - [ ] `go tool golangci-lint run` reports no issues.
 - [ ] `mdsmith check .` passes.
 
 ## Open Questions
 
-- **Catalog edge representation.** Today the LSP index
-  emits one `EdgeCatalog` per directive with empty
-  `TargetFile` so call-hierarchy can show "this file
-  uses a catalog" without exploding large globs. Plan
-  151's `BacklinksFor` filtered them out. Should the
-  unified extractor expand the glob (cheap when an
-  `fs.FS` is in hand, expensive in the CLI),
-  emit a typed `Unresolved` sentinel, or keep the
-  current placeholder shape? Decide before step 2.
 - **`mdsmith list backlinks` performance.** If the CLI
   builds a transient index per invocation, the
   build cost is paid once instead of per-link.

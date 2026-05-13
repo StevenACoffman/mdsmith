@@ -516,6 +516,12 @@ func (s *Server) renameHeading(
 		// slugRemapPairs already filters empty and unchanged
 		// slugs, so no redundant guard is needed here.
 		s.appendAnchorEditsForHeading(changes, idx, rel, old, new)
+		// Ref-def destinations like `[label]: ./a.md#slug` aren't
+		// recorded as edges in the index (defs are symbols, not
+		// edges; only their uses become EdgeRefLink). Walk every
+		// workspace file once per shifted slug to find ref-defs
+		// whose destination resolves to the renamed heading.
+		s.appendRefDefDestEditsForHeading(changes, idx, rel, old, new)
 	}
 	stableSortEdits(changes)
 	_ = s.t.writeResponse(msg.ID, &workspaceEdit{Changes: changes})
@@ -690,6 +696,198 @@ func headingTextEdit(source []byte, line int, newName string) (textEdit, bool) {
 		},
 		NewText: newName,
 	}, true
+}
+
+// appendRefDefDestEditsForHeading rewrites `[label]: url`
+// definitions whose destination URL points at the renamed
+// heading. The index treats ref-defs as symbols rather than
+// edges, so appendAnchorEditsForHeading skips them — without
+// this companion pass a heading rename would leave def lines
+// like `[setup]: ./a.md#setup` stranded on the old slug while
+// every `[t][setup]` use still resolved correctly through the
+// def to a now-stale anchor.
+//
+// The pass iterates every file the index knows about, reads
+// each through resolveURIAndSource so unsaved buffers win
+// over disk, and emits one edit per def whose destination
+// URL fragment slugifies to oldSlug AND whose path resolves
+// to headingFile (or is the same file when the def is anchor-
+// only).
+func (s *Server) appendRefDefDestEditsForHeading(
+	changes map[string][]textEdit, idx *index.Index,
+	headingFile, oldSlug, newSlug string,
+) {
+	headingFile = index.NormalizePath(headingFile)
+	for _, rel := range idx.Files() {
+		uri, source, ok := s.resolveURIAndSource(rel)
+		if !ok {
+			continue
+		}
+		body, fmOffset := bodyAndFMOffset(source)
+		fileLines := splitLines(source)
+		for _, m := range index.RefDefRegexpMatches(body) {
+			edit, ok := refDefDestEditForMatch(
+				body, fileLines, fmOffset, m,
+				rel, headingFile, oldSlug, newSlug,
+			)
+			if !ok {
+				continue
+			}
+			changes[uri] = append(changes[uri], edit)
+		}
+	}
+}
+
+// refDefDestEditForMatch turns one regex match for a
+// `[label]: url` line into a TextEdit on the URL's slug
+// portion, or returns ok=false when the destination doesn't
+// point at the renamed heading.
+//
+// The URL portion is everything after `]:` on the line,
+// trimmed of surrounding whitespace and an optional quoted
+// title. We don't need to be perfect about the title syntax
+// — we just need to locate the `#slug` substring inside the
+// destination part, the same way anchorFragmentBytes locates
+// it inside an inline link.
+func refDefDestEditForMatch(
+	body []byte, fileLines [][]byte, fmOffset int, m []int,
+	defFile, headingFile, oldSlug, newSlug string,
+) (textEdit, bool) {
+	bodyLine := lineOfBodyOffset(body, m[2])
+	fileLine := bodyLine + fmOffset
+	if fileLine-1 >= len(fileLines) {
+		return textEdit{}, false
+	}
+	row := fileLines[fileLine-1]
+	colonOff := refDefColonOffset(row)
+	if colonOff < 0 {
+		return textEdit{}, false
+	}
+	destStart, destEnd := refDefDestRange(row, colonOff+1)
+	if destStart >= destEnd {
+		return textEdit{}, false
+	}
+	dest := row[destStart:destEnd]
+	if !refDefDestPointsAt(dest, defFile, headingFile, oldSlug) {
+		return textEdit{}, false
+	}
+	// refDefDestPointsAt already confirmed the destination
+	// contains `#oldSlug` (oldSlug is non-empty when the rename
+	// reaches this path), so `#` always exists in dest.
+	hashIdx := destStart
+	for hashIdx < destEnd && row[hashIdx] != '#' {
+		hashIdx++
+	}
+	fragEnd := fragmentEnd(row, hashIdx+1, destEnd)
+	startCh := utf16FromByteOffset(row, hashIdx+1)
+	endCh := utf16FromByteOffset(row, fragEnd)
+	return textEdit{
+		Range: Range{
+			Start: Position{Line: fileLine - 1, Character: startCh},
+			End:   Position{Line: fileLine - 1, Character: endCh},
+		},
+		NewText: newSlug,
+	}, true
+}
+
+// refDefColonOffset returns the byte offset of the `:` that
+// follows the `[label]` in a ref-def line, or -1 when the
+// shape doesn't match. Mirrors the regex's expectation: ≤3
+// leading spaces, then `[label]:` where label has no `]`.
+func refDefColonOffset(row []byte) int {
+	i := 0
+	for i < len(row) && i < 3 && row[i] == ' ' {
+		i++
+	}
+	if i >= len(row) || row[i] != '[' {
+		return -1
+	}
+	close := -1
+	for j := i + 1; j < len(row); j++ {
+		if row[j] == ']' {
+			close = j
+			break
+		}
+	}
+	if close < 0 || close+1 >= len(row) || row[close+1] != ':' {
+		return -1
+	}
+	return close + 1
+}
+
+// refDefDestRange returns the byte range of the destination
+// URL portion of a ref-def line, given the offset just past
+// the `:`. Skips whitespace, then captures until the next
+// whitespace or end of line. Quoted titles after the URL
+// are excluded.
+func refDefDestRange(row []byte, from int) (int, int) {
+	i := from
+	for i < len(row) && (row[i] == ' ' || row[i] == '\t') {
+		i++
+	}
+	start := i
+	for i < len(row) && row[i] != ' ' && row[i] != '\t' {
+		i++
+	}
+	return start, i
+}
+
+// refDefDestPointsAt reports whether the dest bytes (URL
+// portion of a ref-def in defFile) resolve to (headingFile,
+// oldSlug). The check mirrors the index's edge collector:
+// percent-decode the fragment, run through mdtext.Slugify,
+// and compare against oldSlug; resolve the path against
+// defFile's directory and compare against headingFile.
+func refDefDestPointsAt(dest []byte, defFile, headingFile, oldSlug string) bool {
+	t, ok := refDefParseTarget(string(dest))
+	if !ok {
+		return false
+	}
+	// url.Parse already produced t.fragment in decoded form, but
+	// re-running PathUnescape mirrors the index's `decodeAnchor`
+	// helper so corner-case escapes can't drift between the two.
+	// Errors are impossible at this point: url.Parse would have
+	// rejected the dest if it had a malformed `%xx` sequence.
+	decoded, _ := url.PathUnescape(t.fragment)
+	if mdtext.Slugify(decoded) != oldSlug {
+		return false
+	}
+	if t.localAnchor {
+		return index.NormalizePath(defFile) == headingFile
+	}
+	resolved := index.ResolveRelTarget(defFile, t.path)
+	return resolved == headingFile
+}
+
+// refDefDestTarget is the parsed shape of a ref-def URL.
+// Kept private to this file — the index has its own
+// `linkTarget` helper and we don't want to leak two slightly
+// different parsers through one type.
+type refDefDestTarget struct {
+	path        string
+	fragment    string
+	localAnchor bool
+}
+
+func refDefParseTarget(dest string) (refDefDestTarget, bool) {
+	dest = strings.TrimSpace(dest)
+	if dest == "" || strings.HasPrefix(dest, "//") {
+		return refDefDestTarget{}, false
+	}
+	u, err := url.Parse(dest)
+	if err != nil {
+		return refDefDestTarget{}, false
+	}
+	if u.Scheme != "" || u.Host != "" {
+		return refDefDestTarget{}, false
+	}
+	if u.Path == "" && u.Fragment != "" {
+		return refDefDestTarget{fragment: u.Fragment, localAnchor: true}, true
+	}
+	if u.Path == "" {
+		return refDefDestTarget{}, false
+	}
+	return refDefDestTarget{path: u.Path, fragment: u.Fragment}, true
 }
 
 // appendAnchorEditsForHeading records one TextEdit per workspace
@@ -1212,62 +1410,75 @@ func refUseEdit(
 	bodyIdx bodyLineIndex,
 ) (textEdit, bool) {
 	textStart, textEnd := linkTextBounds(l, body)
-	bodyLine := bodyIdx.LineOfOffset(textStart)
-	// fileLine arithmetic stays inside the line table: textStart
-	// came from a parsed link that lives in body, and fmOffset
-	// is the same line shift the splitLines call used. lineStart
-	// is always at or before textStart-1 (the `[` precedes the
-	// first text byte), so textOpenCol is non-negative without
-	// an explicit clamp.
-	fileLine := bodyLine + fmOffset
-	row := lines[fileLine-1]
-	lineStart := bodyIdx.LineStart(bodyLine)
-	textOpenCol := textStart - lineStart - 1 // include the `[`
-	textCloseCol := textEnd - lineStart      // points just past last text byte
-	pairs := bracketPairs(row)
-	first, second := matchingPair(pairs, textOpenCol, textCloseCol)
-	target, ok := targetPairForRefUse(first, second, l.Reference.Type)
-	if !ok {
-		// Multi-line links or unusual goldmark output can leave
-		// matchingPair without a valid pair for the cursor's
-		// line. Skip the edge rather than emit a zero-width
-		// edit anchored at column 0.
-		return textEdit{}, false
-	}
-	startCh := utf16FromByteOffset(row, target.open+1)
-	endCh := utf16FromByteOffset(row, target.close)
+	// Goldmark parsed a reference link, so the surrounding
+	// bytes always form valid brackets: text begins after `[`
+	// and ends at `]`; full refs follow with `[label]`. The
+	// false return path in labelBoundsInBody is unreachable
+	// for AST-derived inputs; treating it as a guarantee keeps
+	// refUseEdit from inheriting an uncoverable branch.
+	labelStart, labelEnd, _ := labelBoundsInBody(body, textStart, textEnd, l.Reference.Type)
+	// labelStart/End are byte offsets in body, so the line
+	// lookups stay inside the source's line table by
+	// construction: lines is splitLines(source) which spans
+	// front matter + body, and fmOffset is the same line shift
+	// the body parse used.
+	startLine := bodyIdx.LineOfOffset(labelStart) + fmOffset
+	endLine := bodyIdx.LineOfOffset(labelEnd) + fmOffset
+	startCol := labelStart - bodyIdx.LineStart(startLine-fmOffset)
+	endCol := labelEnd - bodyIdx.LineStart(endLine-fmOffset)
+	startCh := utf16FromByteOffset(lines[startLine-1], startCol)
+	endCh := utf16FromByteOffset(lines[endLine-1], endCol)
 	return textEdit{
 		Range: Range{
-			Start: Position{Line: fileLine - 1, Character: startCh},
-			End:   Position{Line: fileLine - 1, Character: endCh},
+			Start: Position{Line: startLine - 1, Character: startCh},
+			End:   Position{Line: endLine - 1, Character: endCh},
 		},
 		NewText: newName,
 	}, true
 }
 
-// targetPairForRefUse picks the bracket pair refUseEdit should
-// rewrite for one reference-style link. Full `[text][label]`
-// rewrites the trailing pair; shortcut `[label]` and collapsed
-// `[label][]` rewrite the leading pair. Returns ok=false when
-// matchingPair couldn't locate the relevant pair on the cursor's
-// line — multi-line link spans and stray Reference shapes both
-// surface as sentinel (-1,-1) pairs that must not be turned into
-// zero-width edits.
-func targetPairForRefUse(first, second bracketPair, refType ast.ReferenceLinkType) (bracketPair, bool) {
-	if first.open < 0 || first.close <= first.open {
-		return bracketPair{}, false
-	}
+// labelBoundsInBody returns the body-byte offsets of the label
+// inside a reference-style link, given the link's text-segment
+// bounds and the goldmark Reference type. For full `[text][label]`
+// the range covers the label content (between the inner `[` and
+// `]`). For shortcut `[label]` and collapsed `[label][]` the
+// range covers the text bracket's content (the text IS the
+// label). Returns ok=false when the surrounding bracket structure
+// doesn't match what the type implies — guarding against unusual
+// goldmark output without dropping multi-line uses, where the
+// label still sits between intact byte offsets even when the
+// text spans newlines.
+func labelBoundsInBody(body []byte, textStart, textEnd int, refType ast.ReferenceLinkType) (int, int, bool) {
 	if refType == ast.ReferenceLinkFull {
-		if second.open < 0 || second.close <= second.open {
-			return bracketPair{}, false
+		// `[text][label]`: the text closes at body[textEnd] with
+		// `]`, then `[` opens the label.
+		if textEnd >= len(body) || body[textEnd] != ']' {
+			return 0, 0, false
 		}
-		return second, true
+		if textEnd+1 >= len(body) || body[textEnd+1] != '[' {
+			return 0, 0, false
+		}
+		labelOpen := textEnd + 2
+		// Scan for the closing `]`, honoring backslash escapes.
+		for i := labelOpen; i < len(body); i++ {
+			if body[i] == '\\' && i+1 < len(body) {
+				i++
+				continue
+			}
+			if body[i] == ']' {
+				return labelOpen, i, true
+			}
+		}
+		return 0, 0, false
 	}
-	// Collapsed `[label][]` keeps the empty trailing pair and
-	// rewrites the leading one (text == label by definition).
-	// Shortcut `[label]` has only the leading pair. Both share
-	// the same target.
-	return first, true
+	// Shortcut / collapsed: the label IS the text bracket.
+	if textStart <= 0 || body[textStart-1] != '[' {
+		return 0, 0, false
+	}
+	if textEnd >= len(body) || body[textEnd] != ']' {
+		return 0, 0, false
+	}
+	return textStart, textEnd, true
 }
 
 // linkTextBounds returns the [start, end) absolute byte offsets of
@@ -1332,30 +1543,6 @@ func bracketPairs(row []byte) []bracketPair {
 		}
 	}
 	return pairs
-}
-
-// matchingPair returns the (text, label) bracket pair touching the
-// link whose text-bracket bounds are [textOpenCol, textCloseCol].
-// The first returned pair is the text bracket; the second is the
-// label bracket if the next pair starts immediately after the text
-// pair's `]` (full or collapsed reference). When no second pair is
-// present, the label is the only pair (shortcut reference).
-func matchingPair(pairs []bracketPair, textOpenCol, textCloseCol int) (bracketPair, bracketPair) {
-	miss := bracketPair{open: -1, close: -1}
-	first, second := miss, miss
-	for i, pr := range pairs {
-		// The text bracket starts at textOpenCol-ish (the link's
-		// `[` is one byte before the first text segment). Allow a
-		// small slack because escapes may shift the text segment.
-		if pr.open <= textOpenCol && pr.close >= textCloseCol-1 {
-			first = pr
-			if i+1 < len(pairs) && pairs[i+1].open == pr.close+1 {
-				second = pairs[i+1]
-			}
-			return first, second
-		}
-	}
-	return first, second
 }
 
 // lineOfBodyOffset returns the 1-based line of byte offset off
