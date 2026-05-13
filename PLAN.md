@@ -70,7 +70,7 @@ footer: |
 | 138 | ✅     | sonnet | [`mdsmith list backlinks` subcommand](plan/138_backlinks-subcommand.md)                                                   |
 | 139 | ✅     | sonnet | [Field-presence kind assignment](plan/139_field-presence-kind-assignment.md)                                              |
 | 140 | ✅     | sonnet | [Per-kind `path-pattern` for filename validation](plan/140_kind-path-pattern.md)                                          |
-| 142 | 🔲     | sonnet | [Content rules for prose constraints](plan/142_schema-content-constraints.md)                                             |
+| 142 | ✅     | sonnet | [Content rules for prose constraints](plan/142_schema-content-constraints.md)                                             |
 | 143 | ✅     | sonnet | [Schema cross-references, acronyms, and index](plan/143_schema-cross-refs-acronyms-index.md)                              |
 | 144 | ✅     | sonnet | [Numeric sort for `<?catalog?>` directive](plan/144_catalog-numeric-sort.md)                                              |
 | 145 | 🔲     | opus   | [Publish mdsmith via asdf and mise registry submissions](plan/145_asdf-mise-registry-submissions.md)                      |

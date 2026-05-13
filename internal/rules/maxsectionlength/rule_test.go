@@ -175,6 +175,9 @@ func TestDefaultSettings(t *testing.T) {
 	assert.Equal(t, 0, ds["max"])
 	assert.Equal(t, map[string]any{}, ds["per-level"])
 	assert.Equal(t, []any{}, ds["per-heading"])
+	assert.Equal(t, 0, ds["max-words"])
+	assert.Equal(t, 0, ds["min-words"])
+	assert.Equal(t, 0, ds["max-paragraphs"])
 }
 
 func TestHeadingLine_FallbackToTextChild(t *testing.T) {
@@ -363,4 +366,113 @@ func TestApplySettings_PerHeadingNegativeMax(t *testing.T) {
 		},
 	})
 	assert.Error(t, err)
+}
+
+// --- max-words / min-words / max-paragraphs ---
+
+func TestCheck_MaxWordsOverLimit_Diagnostic(t *testing.T) {
+	src := "# Title\n\n" + strings.Repeat("word ", 60) + "\n"
+	r := &Rule{MaxWords: 50}
+	diags := r.Check(mustFile(t, src))
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, "# Title")
+	assert.Contains(t, diags[0].Message, "too many words")
+	assert.Contains(t, diags[0].Message, "60 > 50")
+}
+
+func TestCheck_MaxWordsUnderLimit_NoDiagnostic(t *testing.T) {
+	src := "# Title\n\nshort body of a few words.\n"
+	r := &Rule{MaxWords: 50}
+	assert.Empty(t, r.Check(mustFile(t, src)))
+}
+
+func TestCheck_MinWordsUnderLimit_Diagnostic(t *testing.T) {
+	src := "# Title\n\nonly three words here.\n"
+	r := &Rule{MinWords: 10}
+	diags := r.Check(mustFile(t, src))
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, "# Title")
+	assert.Contains(t, diags[0].Message, "too few words")
+	assert.Contains(t, diags[0].Message, "4 < 10")
+}
+
+func TestCheck_MinWordsMet_NoDiagnostic(t *testing.T) {
+	src := "# Title\n\n" + strings.Repeat("word ", 12) + "\n"
+	r := &Rule{MinWords: 10}
+	assert.Empty(t, r.Check(mustFile(t, src)))
+}
+
+func TestCheck_MaxParagraphsOverLimit_Diagnostic(t *testing.T) {
+	src := "# Title\n\nfirst.\n\nsecond.\n\nthird.\n\nfourth.\n"
+	r := &Rule{MaxParagraphs: 3}
+	diags := r.Check(mustFile(t, src))
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, "# Title")
+	assert.Contains(t, diags[0].Message, "too many paragraphs")
+	assert.Contains(t, diags[0].Message, "4 > 3")
+}
+
+func TestCheck_MaxParagraphsUnderLimit_NoDiagnostic(t *testing.T) {
+	src := "# Title\n\nfirst.\n\nsecond.\n"
+	r := &Rule{MaxParagraphs: 3}
+	assert.Empty(t, r.Check(mustFile(t, src)))
+}
+
+func TestCheck_SubsectionWordsNotCountedAgainstParent(t *testing.T) {
+	src := "# H1\n\nparent short body.\n\n## H2\n\n" + strings.Repeat("word ", 60) + "\n"
+	r := &Rule{MaxWords: 10}
+	diags := r.Check(mustFile(t, src))
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, "## H2")
+}
+
+func TestCheck_MaxAndWordsBothFire(t *testing.T) {
+	src := "# T\n\n" + strings.Repeat("word\n", 60) + "\n"
+	r := &Rule{Max: 3, MaxWords: 10}
+	diags := r.Check(mustFile(t, src))
+	require.Len(t, diags, 2)
+	// Order: line-limit first, then word-limit (matches check order).
+	assert.Contains(t, diags[0].Message, "too long")
+	assert.Contains(t, diags[1].Message, "too many words")
+}
+
+func TestApplySettings_MaxWords(t *testing.T) {
+	r := &Rule{}
+	err := r.ApplySettings(map[string]any{"max-words": 100})
+	require.NoError(t, err)
+	assert.Equal(t, 100, r.MaxWords)
+}
+
+func TestApplySettings_MinWords(t *testing.T) {
+	r := &Rule{}
+	err := r.ApplySettings(map[string]any{"min-words": 5})
+	require.NoError(t, err)
+	assert.Equal(t, 5, r.MinWords)
+}
+
+func TestApplySettings_MaxParagraphs(t *testing.T) {
+	r := &Rule{}
+	err := r.ApplySettings(map[string]any{"max-paragraphs": 3})
+	require.NoError(t, err)
+	assert.Equal(t, 3, r.MaxParagraphs)
+}
+
+func TestApplySettings_NegativeMaxWords(t *testing.T) {
+	r := &Rule{}
+	err := r.ApplySettings(map[string]any{"max-words": -1})
+	assert.Error(t, err)
+}
+
+func TestApplySettings_NonIntegerMinWords(t *testing.T) {
+	r := &Rule{}
+	err := r.ApplySettings(map[string]any{"min-words": "ten"})
+	assert.Error(t, err)
+}
+
+func TestApplyDefaultSettings_ClearsWordAndParagraphCaps(t *testing.T) {
+	r := &Rule{MaxWords: 10, MinWords: 5, MaxParagraphs: 3}
+	require.NoError(t, r.ApplySettings(r.DefaultSettings()))
+	assert.Equal(t, 0, r.MaxWords)
+	assert.Equal(t, 0, r.MinWords)
+	assert.Equal(t, 0, r.MaxParagraphs)
 }
