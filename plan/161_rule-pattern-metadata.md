@@ -1,0 +1,316 @@
+---
+id: 161
+title: Expose rule maintainability patterns via CLI help and LSP
+status: "🔲"
+model: sonnet
+depends-on: []
+summary: >-
+  Each rule README under `internal/rules/` declares
+  a maintainability pattern — the structural shape
+  where adopting the rule (or its directive/config)
+  prevents drift. Schema-validate the block,
+  surface it through `mdsmith help rule <name>` and
+  a new `mdsmith help patterns` topic, and serve
+  the same metadata through the LSP so the
+  mdsmith-reviewer agent (plan 160) and any editor
+  client can query patterns without hard-coding
+  them in skill bodies.
+---
+# Expose rule maintainability patterns via CLI help and LSP
+
+## Goal
+
+Move pattern knowledge out of skill bodies and
+into the rules. Each rule README declares the
+structural shape that adopting the rule would
+keep clean. The CLI and LSP expose that
+documentation so agents and editors can query
+it.
+
+## Background
+
+Plan 160 introduces the `mdsmith-reviewer`
+agent. The agent is process-focused. It walks
+changed files and proposes which rule (or
+directive, or kind config) the author should
+**adopt** so a maintainability pattern stops
+drifting. Rules like `catalog` and `include`
+only validate already-declared directives —
+they don't detect a hand-maintained index or
+duplicated section. The reviewer surfaces those
+opportunities; the rule then keeps them clean
+after adoption. Patterns must live where the
+agent can query them at runtime, not in the
+skill body.
+
+The natural home is the existing rule README at
+[`internal/rules/<id>-<name>/README.md`](../internal/rules/).
+The `markdown-audit` skill's
+[`patterns.md`](../.claude/skills/markdown-audit/patterns.md)
+captures seven checks today.
+
+Five rules carry maintainability blocks. The
+duplicated-content audit check binds to two
+rules. Detection and the recommended fix live
+in different places:
+
+- catalog → hand-maintained indexes; fix:
+  adopt `<?catalog?>`.
+- duplicated-content (MDS037) → repeated
+  paragraphs across files; fix: extract and
+  share via `<?include?>` or refactor.
+- include (MDS021) → near-duplicate sections
+  worth deduping; fix: adopt `<?include?>`.
+- required-structure → kind without a schema;
+  fix: declare `required-structure.schema`.
+- directory-structure → file-placement
+  violations; fix: tighten the
+  `directory-structure.allowed` list.
+
+MDS037 spots repeated text on its own. Include
+(MDS021) only validates declared directives, so
+its block frames the *adoption* opportunity.
+The catalog, required-structure, and
+directory-structure blocks work the same way.
+Three audit checks are config-level and have no
+rule: no `.mdsmith.yml`, similar files without
+a kind, kind without `path-pattern`. Those
+stay in `patterns.md` (non-goal: no new
+rules).
+
+## Non-Goals
+
+- Adding new rules. This plan only documents
+  and exposes existing rules' patterns.
+- Auto-fixing the patterns. Fixes stay with
+  existing `mdsmith fix` paths and the
+  user-invoked [`/mdsmith-fix`](160_claude-code-skills-agents-hooks.md).
+- Generalising the metadata beyond
+  maintainability patterns; rule docs may grow
+  other structured sections later, but the
+  first cut targets the reviewer's needs.
+
+## Design
+
+### Rule README schema
+
+Make `signal` and `fix` structured. The
+contract cannot drift from prose. Add a
+`maintainability` block to the rule README's
+front matter. The [rule-readme proto][proto]
+validates it:
+
+[proto]: ../internal/rules/proto.md
+[dproto]: ../internal/rules/directive-proto.md
+
+```yaml
+---
+maintainability:
+  signal: "a list of links to sibling files in the same directory"
+  fix: "adopt a `<?catalog?>` directive so the list stays in sync"
+  for-diagnostic: false
+---
+```
+
+CUE shape:
+
+```cue
+maintainability: {
+  signal: string & != ""
+  fix:    string & != ""
+  "for-diagnostic"?: bool | *false
+} | null
+```
+
+The field is required (no `?` suffix on
+`maintainability` itself). Both `signal` and
+`fix` are present and non-empty, or the whole
+block is the literal `null` for content-only
+rules. `mdsmith check` rejects absence and
+partial blocks at lint time.
+
+`for-diagnostic: true` opts the entry into
+hover enrichment (see LSP section).
+Adoption-style fixes default to `false`. The
+catalog, include, required-structure, and
+directory-structure rules fire only after
+adoption. An "adopt X" sketch on those
+diagnostics would mislead. Rules whose
+diagnostic *matches* the fix recipe — e.g.
+duplicated-content — set `for-diagnostic:
+true`.
+
+Content-only rules set `maintainability: null`
+and are omitted from the CLI and LSP payloads
+below. The README body remains free-form prose;
+tooling reads the front matter only.
+
+### CLI exposure
+
+`mdsmith help rule <name>` strips front matter
+today
+([`internal/rules/ruledocs.go`](../internal/rules/ruledocs.go)).
+Extend the renderer to append a
+"Maintainability pattern" section built from
+the `maintainability` block. The README body
+stays free-form prose.
+
+For bulk-load by agents, add a new
+`mdsmith help patterns` topic (sibling of
+`rule`, `metrics`, `kinds`). It emits every
+rule's pattern in one shot.
+
+Default output is text. `-f json` produces a
+list of `{id, name, signal, fix}` records.
+`id` is the stable diagnostic code (e.g.
+`MDS001`; matches `Diagnostic.code`). `name`
+is the human-readable rule name (e.g.
+`line-length`).
+
+### LSP exposure
+
+The LSP gets one extension request and one
+existing-method enrichment:
+
+- `mdsmith/rulePatterns` — server returns the
+  same payload as `mdsmith help patterns -f
+  json`. Agent clients can call this once per
+  session.
+- `textDocument/hover` on a diagnostic from a
+  rule whose `maintainability.fix` describes a
+  diagnostic-level remediation appends that
+  fix. Adoption-style fixes (e.g. catalog,
+  include — recommending a directive *before*
+  it exists) are skipped here so an
+  already-firing diagnostic does not get a
+  "adopt `<?include?>`" suggestion. The
+  implementer adds a `for-diagnostic: bool`
+  flag (or equivalent) on the `maintainability`
+  block to mark which entries hover may
+  surface.
+
+### Reviewer agent integration
+
+The mdsmith-reviewer agent (plan 160) calls one
+of:
+
+- `mdsmith help patterns -f json` when running
+  outside an editor.
+- `mdsmith/rulePatterns` when an LSP server is
+  attached.
+
+Either way, the agent stays free of
+hard-coded patterns and picks up new rules
+automatically.
+
+## Tasks
+
+1. Add the `maintainability` front-matter block
+   (with the CUE constraint above) to both
+   [`internal/rules/proto.md`][proto] (used by
+   the `rule-readme` kind) and
+   [`internal/rules/directive-proto.md`][dproto]
+   (used by the `directive-rule-readme` kind
+   for MDS019/021/038/039). Both kinds
+   reference their respective proto, so the
+   constraint propagates automatically once
+   added.
+2. Populate `maintainability` on every existing
+   rule README. Reuse content from the audit
+   skill's [patterns.md][audit-patterns] where
+   it overlaps. Content-only rules set
+   `maintainability: null`.
+3. Extend `mdsmith help rule <name>` to render
+   the `maintainability` block as a
+   "Maintainability pattern" section appended
+   to the existing body output. Add the new
+   `patterns` help topic to
+   [`cmd/mdsmith`](../cmd/mdsmith) emitting
+   `{id, name, signal, fix}` records (omitting
+   content-only rules); honour `-f text|json`.
+   Write failing tests first per CLAUDE.md.
+4. Add the `mdsmith/rulePatterns` LSP method
+   and the `textDocument/hover` enrichment.
+   Failing tests first.
+5. Document both surfaces in
+   [`docs/reference/cli/help.md`](../docs/reference/cli/help.md)
+   and
+   [`docs/reference/cli/lsp.md`](../docs/reference/cli/lsp.md).
+6. Trim [`patterns.md`][audit-patterns] to
+   just the three config-level checks (no
+   `.mdsmith.yml`, similar files without a
+   kind, kind without `path-pattern`). The
+   five rule-backed checks now live in their
+   rule READMEs. Update the audit skill body
+   to load rule-backed patterns from
+   `mdsmith help patterns` and keep reading
+   the trimmed `patterns.md` for the non-rule
+   checks. The marketplace plugin at
+   `editors/claude-code-audit/` ships only the
+   SKILL.md (no sibling `patterns.md`); either
+   inline the trimmed content into the plugin
+   SKILL.md via `<?include?>` so installed
+   users still get the non-rule heuristics, or
+   add a sibling `patterns.md` under
+   `editors/claude-code-audit/skills/markdown-audit/`.
+
+[audit-patterns]: ../.claude/skills/markdown-audit/patterns.md
+
+## Acceptance Criteria
+
+- [ ] Every rule README declares a
+      `maintainability` block (either
+      `{signal, fix}` or the literal `null`) in
+      front matter; `mdsmith check
+      internal/rules/` passes via the
+      `rule-readme` kind.
+- [ ] Absence of the field, or a partial block
+      (e.g. `signal` without `fix`), fails
+      `mdsmith check` with a schema error.
+- [ ] For a rule with a non-null
+      `maintainability` block,
+      `mdsmith help rule <name>` renders it as a
+      "Maintainability pattern" section.
+- [ ] For a content-only rule
+      (`maintainability: null`),
+      `mdsmith help rule <name>` does not render
+      a "Maintainability pattern" section
+      (neither empty nor literal `null`).
+- [ ] `mdsmith help patterns` (default text)
+      lists every rule's pattern in a readable
+      form; covered by a new test asserting the
+      output includes each rule's `signal` and
+      `fix` lines for non-null rules.
+- [ ] `mdsmith help patterns -f json` emits a
+      JSON array of `{id, name, signal, fix}`
+      entries (with `id` matching diagnostic
+      codes like `MDS001`), omitting
+      content-only rules. Covered by a new unit
+      test.
+- [ ] `mdsmith/rulePatterns` returns the same
+      payload over LSP. Covered by a new LSP
+      end-to-end test.
+- [ ] `textDocument/hover` on a diagnostic
+      from a rule whose maintainability block
+      is flagged for-diagnostic appends the fix
+      sketch; hover on adoption-only rules
+      (catalog, include) and content-only rules
+      is unchanged. Covered by a new hover
+      test.
+- [ ] [`docs/reference/cli/help.md`](../docs/reference/cli/help.md)
+      and
+      [`docs/reference/cli/lsp.md`](../docs/reference/cli/lsp.md)
+      document the new topic and LSP method.
+- [ ] The `markdown-audit` skill (both local
+      `.claude/skills/` copy and the installed
+      `mdsmith-audit` plugin) surfaces all five
+      rule-backed patterns from `mdsmith help
+      patterns` *and* the three trimmed
+      config-level checks from `patterns.md`
+      when run on a fixture repo.
+- [ ] `go test ./...` passes.
+- [ ] `mdsmith check .` passes.
+
+## ...
+
+<?allow-empty-section?>
