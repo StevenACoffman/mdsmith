@@ -16,6 +16,7 @@ package index
 
 import (
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -92,6 +93,12 @@ const (
 // Empty TargetFile means "same file as Source" (used for anchor and
 // reference-style links). Empty TargetAnchor means the reference
 // targets the file as a whole (e.g. `[text](./other.md)`).
+//
+// Unresolved is set on edges whose target shape is a glob pattern
+// (catalog directives) rather than a single file. Reverse-edge
+// queries (IncomingEdges / BacklinksFor) skip unresolved edges so
+// catalog directives don't surface as phantom self-backlinks the way
+// empty-TargetFile placeholders did before plan 153.
 type Edge struct {
 	SourceFile   string
 	SourceLine   int // 1-based
@@ -100,6 +107,7 @@ type Edge struct {
 	TargetAnchor string
 	TargetLabel  string
 	Kind         EdgeKind
+	Unresolved   bool
 }
 
 // FileEntry is one file's contribution to the index.
@@ -253,7 +261,28 @@ func (i *Index) UpdateWithKinds(path string, source []byte, kinds []string) {
 //
 // Build replaces the entire current index, including evicting any
 // entries whose path no longer appears in files.
+//
+// Build fans out the per-file extractor across runtime.GOMAXPROCS(0)
+// worker goroutines so a multi-thousand-file workspace lands in the
+// graph in roughly wall-clock / cpu-cores time. The extractor itself
+// is pure given (path, bytes); the only shared state is the result
+// map, which a single collector goroutine drains. The supplied loader
+// is called concurrently — callers whose loader is not safe for
+// concurrent calls must serialise inside it or fall back to
+// BuildSerial.
 func (i *Index) Build(files []string, load func(path string) ([]byte, error)) {
+	if i == nil {
+		return
+	}
+	next := buildEntriesParallel(files, load, runtime.GOMAXPROCS(0))
+	i.mu.Lock()
+	i.files = next
+	i.mu.Unlock()
+}
+
+// BuildSerial is the single-threaded variant of Build. Use this when
+// the loader is not safe for concurrent calls.
+func (i *Index) BuildSerial(files []string, load func(path string) ([]byte, error)) {
 	if i == nil {
 		return
 	}
@@ -274,9 +303,92 @@ func (i *Index) Build(files []string, load func(path string) ([]byte, error)) {
 	i.mu.Unlock()
 }
 
+// buildEntriesParallel runs the per-file extractor across workers
+// goroutines and returns the assembled map. workers <= 1 falls back
+// to a sequential build so callers can dial the parallelism via the
+// caller (Build uses GOMAXPROCS).
+//
+// Each worker handles a contiguous slice of files and writes into
+// its own local map; the final merge happens after wg.Wait so no
+// channel or mutex is in the hot path. The per-file extractor is
+// pure given (path, bytes), so workers share no mutable state.
+func buildEntriesParallel(files []string, load func(path string) ([]byte, error), workers int) map[string]*FileEntry {
+	if workers < 1 {
+		workers = 1
+	}
+	if workers == 1 || len(files) <= 1 {
+		return buildEntriesChunk(files, load)
+	}
+	chunkSize := (len(files) + workers - 1) / workers
+	localMaps := make([]map[string]*FileEntry, workers)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		start := w * chunkSize
+		if start >= len(files) {
+			break
+		}
+		end := start + chunkSize
+		if end > len(files) {
+			end = len(files)
+		}
+		wg.Add(1)
+		go func(idx int, chunk []string) {
+			defer wg.Done()
+			localMaps[idx] = buildEntriesChunk(chunk, load)
+		}(w, files[start:end])
+	}
+	wg.Wait()
+	return mergeFileEntryMaps(localMaps)
+}
+
+// buildEntriesChunk builds FileEntries for a contiguous slice of
+// files into a fresh map. Returns the map even when chunk is empty
+// so callers can append it unconditionally during the merge.
+func buildEntriesChunk(chunk []string, load func(path string) ([]byte, error)) map[string]*FileEntry {
+	out := make(map[string]*FileEntry, len(chunk))
+	for _, p := range chunk {
+		path := NormalizePath(p)
+		if path == "" {
+			continue
+		}
+		data, err := load(path)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		out[path] = buildFileEntry(path, data)
+	}
+	return out
+}
+
+// mergeFileEntryMaps concatenates per-worker maps into one. Workers
+// in buildEntriesParallel touch disjoint file paths so a key
+// collision indicates a bug — the loop overwrites silently to
+// preserve the "last worker wins" semantic that matched the previous
+// sequential path.
+func mergeFileEntryMaps(maps []map[string]*FileEntry) map[string]*FileEntry {
+	total := 0
+	for _, m := range maps {
+		total += len(m)
+	}
+	next := make(map[string]*FileEntry, total)
+	for _, m := range maps {
+		for k, v := range m {
+			next[k] = v
+		}
+	}
+	return next
+}
+
 // IncomingEdges returns every workspace edge whose target is the
 // given (file, anchor). When anchor is "" matches edges to the file
 // at large (no anchor specified by the caller).
+//
+// Unresolved edges (catalog directives whose glob hasn't been
+// expanded) are skipped — they don't yet point at a specific file,
+// so they can't satisfy a (file, anchor) match. Treating their
+// empty TargetFile as "same file" the way concrete same-file edges
+// are treated would misattribute them as phantom self-backlinks
+// (see plan 153 for the unification that introduced the flag).
 //
 // The returned slice is a fresh copy.
 func (i *Index) IncomingEdges(file, anchor string) []Edge {
@@ -289,6 +401,9 @@ func (i *Index) IncomingEdges(file, anchor string) []Edge {
 	var out []Edge
 	for _, fe := range i.files {
 		for _, e := range fe.Outgoing {
+			if e.Unresolved {
+				continue
+			}
 			tFile := e.TargetFile
 			if tFile == "" {
 				tFile = fe.Path
@@ -311,12 +426,9 @@ func (i *Index) IncomingEdges(file, anchor string) []Edge {
 // question — IncomingEdges(file, anchor) answers the narrower
 // "what targets this specific heading".
 //
-// Catalog edges are filtered out: the index emits a single
-// EdgeCatalog with an empty TargetFile per `<?catalog?>` directive
-// so call-hierarchy can show "this file uses a catalog" without
-// expanding the glob, but those edges don't actually cite any
-// particular file. Without the filter they'd surface as phantom
-// self-backlinks on every file that hosts a catalog directive.
+// IncomingEdges already drops Unresolved edges (catalog directives
+// whose glob pattern hasn't been expanded) so they don't surface
+// here as phantom self-backlinks on every catalog host file.
 //
 // Same-file citations (EdgeAnchorLink, EdgeRefLink) stay in the
 // result so callers can filter on SourceFile when they want only
@@ -329,14 +441,7 @@ func (i *Index) BacklinksFor(file string) []Edge {
 	if i == nil {
 		return nil
 	}
-	raw := i.IncomingEdges(file, "")
-	edges := raw[:0]
-	for _, e := range raw {
-		if e.Kind == EdgeCatalog {
-			continue
-		}
-		edges = append(edges, e)
-	}
+	edges := i.IncomingEdges(file, "")
 	sort.Slice(edges, func(a, b int) bool {
 		if edges[a].SourceFile != edges[b].SourceFile {
 			return edges[a].SourceFile < edges[b].SourceFile
