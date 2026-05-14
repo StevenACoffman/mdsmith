@@ -73,7 +73,7 @@ editors/
   claude-code-reviewer/
     .claude-plugin/plugin.json
     agents/markdown-reviewer.md
-    agents/patterns.md
+    patterns.md
     README.md
   claude-code-autofix/
     .claude-plugin/plugin.json
@@ -138,24 +138,21 @@ pattern; bodies are command-specific (no
 ### `mdsmith-reviewer`
 
 One subagent in `agents/markdown-reviewer.md`
-plus a sibling `agents/patterns.md` carrying
-the three config-level checks (no
-`.mdsmith.yml`, similar files without a kind,
-kind without `path-pattern`); the reviewer
-plugin ships its own copy so installed users
-don't need the source-tree audit skill.
-Rule-backed patterns load via
-`mdsmith help patterns -f json` or LSP
-`mdsmith/rulePatterns` (see [plan 161][p161]).
-The agent proposes the rule, directive, or
-kind config to **adopt** so the pattern stops
-drifting — not a diagnostic the rule
-already catches; e.g. `catalog` validates
-declared directives, not hand-maintained
-indexes, and content nits stay with
-`mdsmith check`. Tools: Read, Grep, Bash
-(`mdsmith help`, `mdsmith check -f json`,
-`mdsmith kinds resolve`), GitHub MCP.
+plus a sibling `patterns.md` at the plugin
+root, outside `agents/` so the loader treats
+it as data. `patterns.md` ships the three
+config-level checks (no `.mdsmith.yml`,
+similar files without a kind, kind without
+`path-pattern`); installed users don't need
+the source-tree audit skill. Rule-backed
+patterns load via `mdsmith help patterns -f
+json` or LSP `mdsmith/rulePatterns` (see
+[plan 161][p161]). The agent proposes the
+rule, directive, or kind config to **adopt**
+so the pattern stops drifting; content nits
+stay with `mdsmith check`. Tools: Read, Grep,
+Bash (`mdsmith help`, `mdsmith check -f
+json`, `mdsmith kinds resolve`), GitHub MCP.
 No auto-fix.
 
 [p161]: ./161_rule-pattern-metadata.md
@@ -285,12 +282,16 @@ without auto-installing.
       `/mdsmith-check` each run their matching
       `mdsmith` subcommand and surface output.
 - [ ] `markdown-reviewer` produces a structured
-      review summary on a sample Markdown PR and
-      invokes `mdsmith help patterns` (or the
-      LSP equivalent) — no hard-coded rule list
-      in the agent body. Verified by adding a
-      new rule with a pattern and observing the
-      reviewer pick it up unchanged.
+      review summary on a sample Markdown PR;
+      it pulls rule-backed patterns via
+      `mdsmith help patterns` (no hard-coded
+      list — verified by adding a new rule
+      and seeing it picked up unchanged) and
+      surfaces the three config-level checks
+      from sibling `patterns.md` (fixture:
+      missing `.mdsmith.yml`, similar files
+      without a kind, kind without
+      `path-pattern`).
 - [ ] After Edit/Write/MultiEdit on a `.md`
       file, `mdsmith fix` runs on it. Verified
       with an absolute path under a workspace

@@ -59,9 +59,9 @@ in different places:
 - include (MDS021) — near-duplicate sections
   worth deduping; adopt `<?include?>`.
 - required-structure — kind without a schema;
-  declare it inline as `kinds.<name>.schema`
+  declare it inline at `kinds.<name>.schema`
   or via proto file at
-  `rules.required-structure.schema`.
+  `kinds.<name>.rules.required-structure.schema`.
 - directory-structure — file-placement
   violations; move the file to an allowed
   directory, or extend
