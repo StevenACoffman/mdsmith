@@ -105,15 +105,57 @@ func parseWithTableExt(source []byte) ast.Node {
 // topLevelBlocks returns the document's top-level block children in
 // source order, annotated with their 1-based starting line. Headings
 // are intentionally included: they bound section ranges but the walker
-// filters them out per scope. Document children are typically a flat
-// list of block nodes, but we follow whichever container the parser
-// chose to be defensive.
+// filters them out per scope.
+//
+// blockLine reports 0 for the corner case where goldmark exposes no
+// position (an empty fenced block with no info string and no content
+// lines). A second pass back-fills those entries from neighbouring
+// siblings — `next - 1` when the following block has a known line,
+// else `prev + 1`, else 1 — so blocksInRange's [startLine, endLine)
+// filter still places the block inside its enclosing section and
+// diagnostic anchors never land at line 0.
 func topLevelBlocks(f *lint.File, root ast.Node) []contentBlock {
 	var out []contentBlock
 	for c := root.FirstChild(); c != nil; c = c.NextSibling() {
 		out = append(out, contentBlock{node: c, line: blockLine(f, c)})
 	}
-	return out
+	return backfillBlockLines(out)
+}
+
+// backfillBlockLines replaces every contentBlock whose line is < 1
+// with a position inferred from siblings. The inference walks each
+// gap separately so a run of position-less blocks all settle into
+// the same section without colliding with the surrounding heading
+// boundaries.
+func backfillBlockLines(blocks []contentBlock) []contentBlock {
+	for i := range blocks {
+		if blocks[i].line >= 1 {
+			continue
+		}
+		blocks[i].line = inferBlockLine(blocks, i)
+	}
+	return blocks
+}
+
+func inferBlockLine(blocks []contentBlock, i int) int {
+	// Prefer the next sibling with a known line, minus one — keeps
+	// the block strictly before any heading that follows.
+	for j := i + 1; j < len(blocks); j++ {
+		if blocks[j].line >= 1 {
+			if blocks[j].line > 1 {
+				return blocks[j].line - 1
+			}
+			return blocks[j].line
+		}
+	}
+	// Otherwise inherit the previous sibling's line + 1 so the block
+	// lands strictly inside its section rather than on the heading.
+	for j := i - 1; j >= 0; j-- {
+		if blocks[j].line >= 1 {
+			return blocks[j].line + 1
+		}
+	}
+	return 1
 }
 
 // contentBlock pairs a top-level block AST node with its 1-based
@@ -131,14 +173,20 @@ type contentBlock struct {
 // otherwise — matching the line numbers the rest of the engine
 // reports for the same nodes. Other block kinds fall back to the
 // first Lines() segment, then to a descendant scan for empty
-// containers. The result is always clamped to >= 1 so diagnostics
-// and blocksInRange filtering never encounter a line-0 anchor.
+// containers.
+//
+// Returns 0 when goldmark exposes no position for n (the truly-
+// empty fenced block with no info string and no content). Callers
+// that anchor diagnostics or filter by section line range must
+// route through topLevelBlocks, which back-fills these unknown
+// positions from sibling blocks so the missing-position case never
+// surfaces as a line-0 diagnostic.
 func blockLine(f *lint.File, n ast.Node) int {
 	if fcb, ok := n.(*ast.FencedCodeBlock); ok {
-		return clampToOne(lint.FindFencedOpenLine(f, fcb))
+		return lint.FindFencedOpenLine(f, fcb)
 	}
 	if n.Lines().Len() > 0 {
-		return clampToOne(f.LineOfOffset(n.Lines().At(0).Start))
+		return f.LineOfOffset(n.Lines().At(0).Start)
 	}
 	line := 0
 	_ = ast.Walk(n, func(c ast.Node, entering bool) (ast.WalkStatus, error) {
@@ -151,18 +199,6 @@ func blockLine(f *lint.File, n ast.Node) int {
 		}
 		return ast.WalkContinue, nil
 	})
-	return clampToOne(line)
-}
-
-// clampToOne replaces a non-positive line number with 1. blockLine's
-// callers anchor diagnostics on the return value; a line-0
-// diagnostic has no source location and confuses editor jump-to-
-// line, and blocksInRange's `>= startLine` filter would silently
-// drop a block whose computed line is 0.
-func clampToOne(line int) int {
-	if line < 1 {
-		return 1
-	}
 	return line
 }
 

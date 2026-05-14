@@ -1290,10 +1290,10 @@ func TestValidate_Content_FencedBlockNoInfoString(t *testing.T) {
 }
 
 // TestValidate_Content_NoLineZeroDiagnostics regresses the
-// clamp-to-1 contract: blockLine must never return 0, so no content
-// diagnostic anchors at a non-existent line. We exercise a few
-// pathological shapes (empty fenced block, paragraph with only
-// soft-line breaks) and assert every diagnostic line is >= 1.
+// position-inference contract: blockLine may return 0 for a
+// position-less empty fenced block, but topLevelBlocks back-fills
+// that to a sibling-derived line. No content diagnostic should
+// anchor at a non-existent line.
 func TestValidate_Content_NoLineZeroDiagnostics(t *testing.T) {
 	raw := map[string]any{
 		"sections": []any{map[string]any{
@@ -1314,6 +1314,30 @@ func TestValidate_Content_NoLineZeroDiagnostics(t *testing.T) {
 		assert.GreaterOrEqual(t, d.Line, 1,
 			"diagnostic %q must not anchor at line 0", d.Message)
 	}
+}
+
+// TestValidate_Content_EmptyFencedBlockClaimsSlot regresses a
+// Copilot review on PR #285: an empty fenced code block with no
+// info string and no content lines must still participate in
+// section-body filtering. The prior clamp-to-1 implementation
+// dropped it from blocksInRange, leading to spurious missing-
+// required-content diagnostics. Position-inference in
+// topLevelBlocks anchors the block inside its section so the
+// `kind: code-block` entry can claim it.
+func TestValidate_Content_EmptyFencedBlockClaimsSlot(t *testing.T) {
+	raw := map[string]any{
+		"sections": []any{map[string]any{
+			"heading": "Body",
+			"content": []any{map[string]any{"kind": "code-block"}},
+		}},
+	}
+	sch, err := ParseInline(raw, "kind x")
+	require.NoError(t, err)
+	doc := newDocFile(t, "doc.md",
+		"# T\n\n## Body\n\n```\n```\n")
+	diags := Validate(doc, sch, nil, false, makeDiagForTest)
+	assert.Empty(t, diags,
+		"an empty fenced block must claim the code-block slot in its section")
 }
 
 // TestValidate_Content_DescribeNodeFallback covers describeNode's
