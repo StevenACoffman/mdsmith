@@ -1226,11 +1226,11 @@ func TestCheck_GlobErrors(t *testing.T) {
 			wantMsg:   "absolute glob path",
 		},
 		{
-			name:      "glob with ..",
+			name:      "glob with .. without project root",
 			src:       "<?catalog\nglob: \"../*.md\"\n?>\n<?/catalog?>\n",
 			fs:        fstest.MapFS{},
 			wantCount: 1,
-			wantMsg:   `".." path traversal`,
+			wantMsg:   `glob contains ".." but project root is not configured`,
 		},
 		{
 			name:      "missing glob",
@@ -1664,27 +1664,6 @@ func TestParseRowTemplate_Valid(t *testing.T) {
 func TestParseRowTemplate_Invalid(t *testing.T) {
 	err := parseRowTemplate("{title")
 	require.Error(t, err, "expected error for invalid template")
-}
-
-func TestContainsDotDot(t *testing.T) {
-	tests := []struct {
-		pattern string
-		want    bool
-	}{
-		{"../foo", true},
-		{"foo/../bar", true},
-		{"foo/bar/..", true},
-		{"foo/bar", false},
-		{"foo..bar", false},
-		{"...", false},
-		{"..", true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.pattern, func(t *testing.T) {
-			got := containsDotDot(tc.pattern)
-			assert.Equal(t, tc.want, got, "containsDotDot(%q) = %v, want %v", tc.pattern, got, tc.want)
-		})
-	}
 }
 
 func TestEnsureTrailingNewline(t *testing.T) {
@@ -2681,7 +2660,8 @@ glob:
 }
 
 func TestSpec_MultiGlobDotDot(t *testing.T) {
-	// A list containing ".." path traversal produces a diagnostic.
+	// A list containing ".." without project root configured produces
+	// a diagnostic.
 	src := `<?catalog
 glob:
   - "*.md"
@@ -2694,7 +2674,7 @@ glob:
 	r := &Rule{}
 	diags := r.Check(f)
 	expectDiags(t, diags, 1)
-	expectDiagMsg(t, diags, `".." path traversal`)
+	expectDiagMsg(t, diags, `glob contains ".." but project root is not configured`)
 }
 
 func TestSpec_MultiGlobInvalidPattern(t *testing.T) {
@@ -2932,8 +2912,313 @@ glob:
 	expectDiagMsg(t, diags, "absolute glob path")
 }
 
+func TestCatalog_DotDotGlobStaysInsideRoot(t *testing.T) {
+	// A "../sibling/*.md" glob resolves to within the project root
+	// when RootFS is set, so matching succeeds and display paths use
+	// "../sibling/" prefixes relative to the catalog-owning file.
+	src := `<?catalog
+glob: "../sibling/*.md"
+?>
+<?/catalog?>
+`
+	mapFS := fstest.MapFS{
+		"sibling/api.md":   {Data: []byte("# API\n")},
+		"sibling/guide.md": {Data: []byte("# Guide\n")},
+		"home/index.md":    {Data: []byte("# Home\n")},
+	}
+	f := newTestFile(t, "home/index.md", src, mapFS)
+	f.RootFS = mapFS
+	r := &Rule{}
+	diags := r.Check(f)
+	// The directive body is empty, so Check must emit the drift
+	// diagnostic — not the dotdot/root-escape diagnostics, which would
+	// signal the resolution wrongly rejected the pattern.
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, "generated section is out of date")
+	assert.NotContains(t, diags[0].Message, `".."`)
+	assert.NotContains(t, diags[0].Message, "escapes project root")
+	result := string(r.Fix(f))
+	assert.Contains(t, result, "../sibling/api.md")
+	assert.Contains(t, result, "../sibling/guide.md")
+}
+
+func TestContainsDotDotInsideBraces(t *testing.T) {
+	cases := map[string]bool{
+		"{..,sibling}/*.md":  true,
+		"{a,..}/*.md":        true,
+		"prefix/{x,..}/*.md": true,
+		"{a,b}/*.md":         false,
+		"{a.b,c}/*.md":       false, // ".": at depth>0 but no second "."
+		"{a..b,c}/*.md":      false, // "..": embedded in segment, not a segment
+		"foo/../bar":         false, // outside braces is a separate check
+		"":                   false,
+		"..":                 false,
+		"{}":                 false,
+	}
+	for input, want := range cases {
+		assert.Equal(t, want, containsDotDotInsideBraces(input), input)
+	}
+}
+
+func TestBraceSegmentBoundary(t *testing.T) {
+	assert.True(t, braceSegmentBoundary("abc", -1))
+	assert.True(t, braceSegmentBoundary("abc", 3))
+	assert.True(t, braceSegmentBoundary("a/b", 1))
+	assert.True(t, braceSegmentBoundary("a,b", 1))
+	assert.True(t, braceSegmentBoundary("a{b", 1))
+	assert.True(t, braceSegmentBoundary("a}b", 1))
+	assert.False(t, braceSegmentBoundary("ab", 1))
+}
+
+func TestProjectRelFileDir_RelativePath(t *testing.T) {
+	f := &lint.File{Path: "docs/development/index.md"}
+	dir, ok := projectRelFileDir(f)
+	require.True(t, ok)
+	assert.Equal(t, "docs/development", dir)
+}
+
+func TestProjectRelFileDir_RootFile(t *testing.T) {
+	f := &lint.File{Path: "README.md"}
+	dir, ok := projectRelFileDir(f)
+	require.True(t, ok)
+	assert.Equal(t, "", dir)
+}
+
+func TestProjectRelFileDir_AbsolutePathNoRootDir(t *testing.T) {
+	f := &lint.File{Path: "/abs/path/index.md"}
+	_, ok := projectRelFileDir(f)
+	assert.False(t, ok, "absolute file path without RootDir cannot be related to root")
+}
+
+func TestProjectRelFileDir_AbsoluteFileAtRoot(t *testing.T) {
+	dir := t.TempDir()
+	f := &lint.File{Path: filepath.Join(dir, "index.md"), RootDir: dir}
+	got, ok := projectRelFileDir(f)
+	require.True(t, ok)
+	assert.Equal(t, "", got, "file directly at project root resolves to empty rel dir")
+}
+
+func TestProjectRelFileDir_CWDRelativePathWithRootDir(t *testing.T) {
+	// Real CLI run from a subdirectory: f.Path is CWD-relative but
+	// RootDir is absolute. projectRelFileDir must absolutize f.Path
+	// against the current CWD before relating it to RootDir, so the
+	// returned directory is project-root-relative regardless of how
+	// the path was supplied on the command line.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "docs", "index.md"),
+		[]byte("# Index\n"), 0o644))
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	require.NoError(t, os.Chdir(filepath.Join(dir, "docs")))
+
+	f := &lint.File{Path: "index.md", RootDir: dir}
+	got, ok := projectRelFileDir(f)
+	require.True(t, ok)
+	assert.Equal(t, "docs", got)
+}
+
+func TestDisplayPath_RelErrorReturnsMatchUnchanged(t *testing.T) {
+	// filepath.Rel returns an error when one path is absolute and the
+	// other relative. Forcing that combination exercises the err branch.
+	res := globResolution{rootRelative: true, fileDir: "skills/foo"}
+	abs := "/somewhere/api.md"
+	assert.Equal(t, abs, res.displayPath(abs))
+}
+
+func TestDisplayPath_LocalFSPassthrough(t *testing.T) {
+	res := globResolution{rootRelative: false}
+	assert.Equal(t, "docs/api.md", res.displayPath("docs/api.md"))
+}
+
+func TestDisplayPath_RelComputedFromRoot(t *testing.T) {
+	res := globResolution{rootRelative: true, fileDir: "skills/foo"}
+	assert.Equal(t, "../../docs/api.md", res.displayPath("docs/api.md"))
+}
+
+func TestCatalog_DotDotGlobInvalidSourceDirStillResolvesRootAware(t *testing.T) {
+	// An invalid `source-dir` would normally fall back to the file's
+	// own fs.FS, but for ".." patterns that fallback can't resolve the
+	// segment at all. Instead, ignore the bad source-dir and continue
+	// root-aware resolution against the file's directory so the
+	// escapes-root diagnostic still fires when warranted.
+	src := `<?catalog
+glob: "../../escape/*.md"
+source-dir: "/abs/invalid"
+?>
+<?/catalog?>
+`
+	mapFS := fstest.MapFS{
+		"home/index.md": {Data: []byte("# Home\n")},
+	}
+	f := newTestFile(t, "home/index.md", src, mapFS)
+	f.RootFS = mapFS
+	r := &Rule{}
+	diags := r.Check(f)
+	expectDiags(t, diags, 1)
+	expectDiagMsg(t, diags, "glob escapes project root")
+}
+
+func TestCatalog_DotDotInBracesRejected(t *testing.T) {
+	// `{..,sibling}/*.md` would expand to include "..", but path.Clean
+	// can't peek inside braces — so the validator rejects it up front
+	// to avoid silent partial matches at glob time.
+	src := `<?catalog
+glob: "{..,sibling}/*.md"
+?>
+<?/catalog?>
+`
+	mapFS := fstest.MapFS{}
+	f := newTestFile(t, "home/index.md", src, mapFS)
+	f.RootFS = mapFS
+	r := &Rule{}
+	diags := r.Check(f)
+	expectDiags(t, diags, 1)
+	expectDiagMsg(t, diags, `".." inside brace expansion`)
+}
+
+func TestCatalog_DotDotGlobAbsoluteFilePath(t *testing.T) {
+	// When the catalog-owning file's path is absolute (as happens via
+	// CLI glob expansion), `..` resolution still works as long as the
+	// project RootDir is configured: the file's directory is computed
+	// relative to RootDir before pattern resolution runs.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "home"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sibling"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "sibling", "api.md"),
+		[]byte("# API\n"), 0o644))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "home", "index.md"),
+		[]byte("placeholder"), 0o644))
+
+	src := `<?catalog
+glob: "../sibling/*.md"
+?>
+<?/catalog?>
+`
+	absPath := filepath.Join(dir, "home", "index.md")
+	f, err := lint.NewFile(absPath, []byte(src))
+	require.NoError(t, err)
+	f.SetRootDir(dir)
+	f.FS = f.RootFS
+
+	r := &Rule{}
+	result := string(r.Fix(f))
+	assert.Contains(t, result, "../sibling/api.md")
+}
+
+func TestCatalog_DotDotGlobCWDRelativePathFromSubdir(t *testing.T) {
+	// Common CLI invocation style: `mdsmith check index.md` run from
+	// a subdirectory under the project root. f.Path is "index.md"
+	// (CWD-relative), but RootDir/RootFS point at the configured
+	// project root. The catalog rule should still resolve "../sibling"
+	// patterns correctly via projectRelFileDir's absolutize-first path.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "home"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sibling"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "sibling", "api.md"),
+		[]byte("# API\n"), 0o644))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "home", "index.md"),
+		[]byte("placeholder"), 0o644))
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	require.NoError(t, os.Chdir(filepath.Join(dir, "home")))
+
+	src := `<?catalog
+glob: "../sibling/*.md"
+?>
+<?/catalog?>
+`
+	f, err := lint.NewFile("index.md", []byte(src))
+	require.NoError(t, err)
+	f.SetRootDir(dir)
+	f.FS = f.RootFS
+
+	r := &Rule{}
+	result := string(r.Fix(f))
+	assert.Contains(t, result, "../sibling/api.md")
+}
+
+func TestCatalog_DotDotGlobAbsoluteFilePathOutsideRoot(t *testing.T) {
+	// An absolute file path outside the configured RootDir cannot be
+	// related to the project root, so the rule surfaces the dedicated
+	// "catalog file is outside project root" diagnostic for the
+	// dotdot pattern instead of silently matching nothing.
+	dir := t.TempDir()
+	otherDir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(otherDir, "foreign.md"),
+		[]byte("placeholder"), 0o644))
+
+	src := `<?catalog
+glob: "../sibling/*.md"
+?>
+<?/catalog?>
+`
+	f, err := lint.NewFile(filepath.Join(otherDir, "foreign.md"), []byte(src))
+	require.NoError(t, err)
+	f.SetRootDir(dir)
+	f.FS = f.RootFS
+
+	r := &Rule{}
+	diags := r.Check(f)
+	require.NotEmpty(t, diags)
+	assert.Contains(t, diags[0].Message, "catalog file is outside project root")
+}
+
+func TestCatalog_DotDotExcludeEscapesRoot(t *testing.T) {
+	// An exclude pattern that resolves outside the project root is
+	// rejected with the same diagnostic as an include pattern, so the
+	// rule never silently strips matches based on out-of-root
+	// suppression rules.
+	src := `<?catalog
+glob:
+  - "*.md"
+  - "!../../escape/*.md"
+?>
+<?/catalog?>
+`
+	mapFS := fstest.MapFS{
+		"home/index.md": {Data: []byte("# Home\n")},
+	}
+	f := newTestFile(t, "home/index.md", src, mapFS)
+	f.RootFS = mapFS
+	r := &Rule{}
+	diags := r.Check(f)
+	expectDiags(t, diags, 1)
+	expectDiagMsg(t, diags, "glob escapes project root")
+}
+
+func TestCatalog_DotDotGlobEscapesRoot(t *testing.T) {
+	// A glob whose resolved path leaves the project root is rejected
+	// with the new diagnostic message.
+	src := `<?catalog
+glob: "../../secret/*.md"
+?>
+<?/catalog?>
+`
+	mapFS := fstest.MapFS{
+		"home/index.md": {Data: []byte("# Home\n")},
+	}
+	f := newTestFile(t, "home/index.md", src, mapFS)
+	f.RootFS = mapFS
+	r := &Rule{}
+	diags := r.Check(f)
+	expectDiags(t, diags, 1)
+	expectDiagMsg(t, diags, "glob escapes project root")
+}
+
 func TestSpec_ExcludeDotDot(t *testing.T) {
-	// ".." path traversal in !-prefixed patterns produces a diagnostic.
+	// ".." in !-prefixed patterns without project root configured
+	// produces a diagnostic.
 	src := `<?catalog
 glob:
   - "*.md"
@@ -2946,7 +3231,7 @@ glob:
 	r := &Rule{}
 	diags := r.Check(f)
 	expectDiags(t, diags, 1)
-	expectDiagMsg(t, diags, `".." path traversal`)
+	expectDiagMsg(t, diags, `glob contains ".." but project root is not configured`)
 }
 
 func TestSpec_ExcludeInvalidPattern(t *testing.T) {
@@ -3578,6 +3863,26 @@ source-dir: ".."
 	assert.Contains(t, result, "top.md")
 }
 
+func TestCatalog_SourceDirNestedTraversalIgnored(t *testing.T) {
+	// A source-dir whose cleaned value starts with "../" is treated as
+	// invalid traversal and resolveGlobFS falls back to f.FS — the
+	// "../foo" branch of resolveBaseRel that ".." alone doesn't hit.
+	src := `<?catalog
+glob: "*.md"
+source-dir: "../escape"
+?>
+<?/catalog?>
+`
+	mapFS := fstest.MapFS{
+		"top.md": {Data: []byte("# Top\n")},
+	}
+	f := newTestFile(t, "index.md", src, mapFS)
+	f.RootFS = mapFS
+	r := &Rule{}
+	result := string(r.Fix(f))
+	assert.Contains(t, result, "top.md")
+}
+
 // =====================================================================
 // buildCatalogEntries error diagnostics (file-size limit)
 // =====================================================================
@@ -3638,25 +3943,23 @@ func TestRule_Category(t *testing.T) {
 }
 
 // =====================================================================
-// Phase 4 coverage: resolveGitignore param variations
+// Phase 4 coverage: resolveGitignoreMatcher param variations
 // =====================================================================
 
-func TestResolveGitignore_DisabledByParam(t *testing.T) {
+func TestResolveGitignoreMatcher_DisabledByParam(t *testing.T) {
 	f := newTestFile(t, "index.md", "")
-	matcher, base := resolveGitignore(f, map[string]string{"gitignore": "false"})
+	matcher := resolveGitignoreMatcher(f, map[string]string{"gitignore": "false"})
 	assert.Nil(t, matcher)
-	assert.Equal(t, "", base)
 }
 
-func TestResolveGitignore_NoMatcherAvailable(t *testing.T) {
+func TestResolveGitignoreMatcher_NoMatcherAvailable(t *testing.T) {
 	f := newTestFile(t, "index.md", "")
 	// GitignoreFunc is nil → GetGitignore returns nil
-	matcher, base := resolveGitignore(f, map[string]string{})
+	matcher := resolveGitignoreMatcher(f, map[string]string{})
 	assert.Nil(t, matcher)
-	assert.Equal(t, "", base)
 }
 
-func TestResolveGitignore_WithMatcherAndSourceDir(t *testing.T) {
+func TestResolveGitignoreMatcher_WithMatcher(t *testing.T) {
 	dir := t.TempDir()
 	stub := &lint.GitignoreMatcher{}
 	f := &lint.File{
@@ -3666,11 +3969,8 @@ func TestResolveGitignore_WithMatcherAndSourceDir(t *testing.T) {
 			return stub
 		},
 	}
-	params := map[string]string{"source-dir": "docs"}
-	matcher, base := resolveGitignore(f, params)
+	matcher := resolveGitignoreMatcher(f, map[string]string{"source-dir": "docs"})
 	assert.Same(t, stub, matcher)
-	assert.NotEmpty(t, base)
-	assert.True(t, filepath.IsAbs(base))
 }
 
 // =====================================================================
