@@ -857,7 +857,18 @@ func setContentItemBound(dst *int, v any, path, key, kind string) error {
 		}
 		*dst = int(x)
 	case float64:
-		if x < 0 || x != float64(int64(x)) {
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return fmt.Errorf(
+				"%s.%s must be a finite integer, got %v", path, key, x)
+		}
+		if x < 0 {
+			return fmt.Errorf(
+				"%s.%s must be non-negative, got %v", path, key, x)
+		}
+		// Reject non-integers before any int conversion. math.Trunc
+		// stays in the float domain, so a huge or fractional value
+		// never reaches the implementation-defined float->int cast.
+		if math.Trunc(x) != x {
 			return fmt.Errorf(
 				"%s.%s must be a non-negative integer, got %v", path, key, x)
 		}

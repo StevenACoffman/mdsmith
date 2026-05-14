@@ -948,6 +948,63 @@ func TestParseInline_ContentItemBoundFloatOverflow(t *testing.T) {
 		"want overflow or non-integer error, got %q", err.Error())
 }
 
+func TestParseInline_ContentItemBoundFloatNaN(t *testing.T) {
+	_, err := ParseInline(map[string]any{
+		"sections": []any{map[string]any{
+			"heading": "Steps",
+			"content": []any{map[string]any{
+				"kind": "list", "min-items": math.NaN(),
+			}},
+		}},
+	}, "kind x")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a finite integer")
+}
+
+func TestParseInline_ContentItemBoundFloatInf(t *testing.T) {
+	_, err := ParseInline(map[string]any{
+		"sections": []any{map[string]any{
+			"heading": "Steps",
+			"content": []any{map[string]any{
+				"kind": "list", "min-items": math.Inf(1),
+			}},
+		}},
+	}, "kind x")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a finite integer")
+}
+
+func TestParseInline_ContentItemBoundFloatHuge(t *testing.T) {
+	// 1e100 is finite and integer-valued in float64 representation
+	// (its mantissa exhausts long before the fractional bit) but it
+	// dwarfs math.MaxInt. The check must reject it via the explicit
+	// range comparison, not via the implementation-defined float->
+	// int64 cast.
+	_, err := ParseInline(map[string]any{
+		"sections": []any{map[string]any{
+			"heading": "Steps",
+			"content": []any{map[string]any{
+				"kind": "list", "min-items": 1e100,
+			}},
+		}},
+	}, "kind x")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds int range")
+}
+
+func TestParseInline_ContentItemBoundFloatNegative(t *testing.T) {
+	_, err := ParseInline(map[string]any{
+		"sections": []any{map[string]any{
+			"heading": "Steps",
+			"content": []any{map[string]any{
+				"kind": "list", "min-items": float64(-3),
+			}},
+		}},
+	}, "kind x")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be non-negative")
+}
+
 func TestParseInline_ContentItemBoundInt64Accepted(t *testing.T) {
 	sch, err := ParseInline(map[string]any{
 		"sections": []any{map[string]any{
