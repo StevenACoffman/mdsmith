@@ -70,7 +70,7 @@ row: "- [{summary}]({filename})"
 - [Built-in Markdown conventions, the rule presets each one applies, and how user config layers on top via deep-merge.](docs/reference/conventions.md)
 - [Glob pattern syntax across mdsmith config, directives, and CLI argument expansion, with the supported exclusion semantics for each surface.](docs/reference/globs.md)
 - [Named field-type shortcuts for inline schema frontmatter values — the registered names, the canonical CUE each one resolves to, and example usage.](docs/reference/schema-types.md)
-- [Section-schema reference: the entry-shape vocabulary used in inline `kinds.<name>.schema:` blocks and `proto.md` files. Covers the `heading:` discriminator, the `regex:` matcher with `{n}` and `{field}` preprocessor tokens, the `repeat: {min, max}` cardinality field, and the matching algorithm.](docs/reference/section-schema.md)
+- [Section-schema reference: the entry-shape vocabulary used in inline `kinds.<name>.schema:` blocks and `proto.md` files. Covers the `heading:` discriminator, the `regex:` matcher (a CUE expression with `digits` and `fmvar` helpers), the `repeat: {min, max}` cardinality field, and the matching algorithm.](docs/reference/section-schema.md)
 <?/catalog?>
 
 ## Development Workflow

@@ -4,9 +4,9 @@ summary: >-
   vocabulary used in inline `kinds.<name>.schema:`
   blocks and `proto.md` files. Covers the
   `heading:` discriminator, the `regex:` matcher
-  with `{n}` and `{field}` preprocessor tokens,
-  the `repeat: {min, max}` cardinality field, and
-  the matching algorithm.
+  (a CUE expression with `digits` and `fmvar`
+  helpers), the `repeat: {min, max}` cardinality
+  field, and the matching algorithm.
 ---
 # Section schema
 
@@ -39,13 +39,13 @@ schema:
     - heading:
         regex: 'Intro|Getting Started'           # disjunction
     - heading:
-        regex: 'Step {n}'                        # numeric pattern
+        regex: 'Step \#(digits)'                 # numeric pattern
         repeat: { min: 1 }                       # one or more
-        sequential: true                         # {n} ordered
+        sequential: true                         # digits ordered
       sections: [...]
       content: [...]
     - heading:
-        regex: '{id}: {name}'                    # frontmatter interpolation
+        regex: '\#(fmvar(id)): \#(fmvar(name))'  # frontmatter interpolation
     - heading:
         regex: '.+'
         repeat: { min: 0 }                       # zero or more (slot)
@@ -107,7 +107,7 @@ exactly one occurrence.
 
 ```yaml
 - heading:
-    regex: 'Step {n}'
+    regex: 'Step \#(digits)'
     repeat: { min: 1, max: 5 }
     sequential: true
 ```
@@ -118,13 +118,20 @@ value is a mapping.
 
 ## The regex matcher
 
-`regex:` is a CUE-compatible regex over the
-heading's rendered plain text.
+`regex:` is a CUE expression evaluating to a
+string. The string is compiled as Go RE2.
 
-**Dialect.** Go RE2, the same dialect CUE's
-`=~` operator uses. No backreferences, no
-lookaround. Plus two mdsmith preprocessor
-tokens described below.
+The YAML value is the body of a CUE
+raw-interpolation string. mdsmith wraps it in
+`#"..."#` before evaluating. Two consequences:
+
+- **Backslash is literal.** Write `\d`, `\w`,
+  `\.`, `\(` directly — no doubling. Plain
+  RE2 patterns work as-is.
+- **Interpolation is `\#(expr)`.** Inside the
+  string, `\#(x)` evaluates `x` in the CUE
+  scope (frontmatter fields plus mdsmith
+  helpers) and substitutes the result.
 
 **Anchoring.** Whole-string. `regex: 'Overview'`
 matches a heading whose text is exactly
@@ -142,51 +149,39 @@ Rendering strips inline emphasis, link wrappers
 **Case.** Sensitive. Use `(?i)` for
 insensitive.
 
-## Preprocessor: `{n}` and `{field}`
+## Helpers
 
-`{n}` and `{field}` are mdsmith preprocessor
-tokens. They rewrite the `regex:` string before
-RE2 compilation. The same tokens work in
-`proto.md` heading rows.
+Two helpers are in the `regex:` evaluation
+scope alongside the document's frontmatter
+fields.
 
-### `{n}` — numeric placeholder
+**`digits`** — string constant
+`(?P<n>[0-9]+)`. A named numeric capture group
+on `n`. Use it for sequenced headings like
+`## Step 1` / `## Step 2`. Limit: one `digits`
+per pattern.
 
-`{n}` expands to `(?P<n>[0-9]+)` — a named
-numeric capture. Use it for headings like
-`## Step 1`, `## Step 2`. Limit: one `{n}` per
-pattern.
+**`fmvar(name)`** — looks up the frontmatter
+field `name`, regex-escapes its value, and
+returns it. Use it whenever the heading text
+must equal a frontmatter value. The escape is
+needed because field values can contain RE2
+metacharacters.
 
 ```yaml
 - heading:
-    regex: 'Step {n}'
+    regex: 'Step \#(digits)'
     repeat: { min: 1 }
     sequential: true
-```
-
-### `{field}` — frontmatter interpolation
-
-`{field}` expands at validate-time. The
-document's frontmatter value for `field` is
-regex-escaped and inserted in place. Use it when
-the heading text must equal a frontmatter value:
-
-```yaml
 - heading:
-    regex: '{id}: {name}'
+    regex: '\#(fmvar(id)): \#(fmvar(name))'
 ```
-
-If `id: "MDS001"` and `name: "first-line"`, the
-schema matches `## MDS001: first-line`.
-
-### `sequential:` — ordering check
 
 `sequential: true` is a sibling field on the
-heading entry. Only meaningful when `regex:`
-contains `{n}`. Asserts that captured numeric
-values across matched headings are in
-increasing order with no gaps.
-
-`sequential: true` without `{n}` parse-errors.
+entry. Only meaningful with `digits` in the
+regex; asserts the captured `n` values are
+increasing with no gaps. Without `digits` it
+parse-errors.
 
 ## The repeat field
 
@@ -242,7 +237,6 @@ Each entry can carry:
   scope produces a diagnostic. Default
   `false`. Express positional flex by listing
   a wildcard slot instead.
-- `sequential:` — described above.
 
 ## Schema-level fields
 
@@ -268,25 +262,29 @@ schema:
 
 ## `proto.md` file syntax
 
-Proto.md files remain a literal-template
-surface. Heading rows in the body act as the
-schema's `sections:` list.
+Proto.md files use a literal-template surface
+distinct from the inline `regex:` form. Heading
+rows in the body act as the schema's
+`sections:` list. `{n}` and `{field}` survive
+here as template placeholders; they desugar to
+the same matcher the inline form produces with
+`digits` and `fmvar`.
 
 | Row syntax        | Equivalent inline entry                        |
 |-------------------|------------------------------------------------|
 | `## Literal text` | `heading: "Literal text"`                      |
 | `## ?`            | `heading: { regex: '.+' }`                     |
 | `## ...`          | `heading: { regex: '.+', repeat: { min: 0 } }` |
-| `## Step {n}`     | `heading: { regex: 'Step {n}' }`               |
-| `## {id}`         | `heading: { regex: '{id}' }`                   |
+| `## Step {n}`     | `heading: { regex: 'Step \#(digits)' }`        |
+| `## {id}`         | `heading: { regex: '\#(fmvar(id))' }`          |
 
 Proto.md cannot express `repeat: { min, max }`
 or `sequential:`. Callers needing those switch
 to the inline-YAML form on a kind in
 `.mdsmith.yml`.
 
-The `<?require filename: "..."?>` directive
-in proto.md bodies is unchanged.
+The `<?require filename: "..."?>` directive in
+proto.md bodies is unchanged.
 
 ## Migration from the old shape
 

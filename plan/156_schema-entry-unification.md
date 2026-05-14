@@ -9,9 +9,12 @@ depends-on: [146]
 summary: >-
   Collapse the section-entry vocabulary to one
   discriminator (`heading:` — null, string, or
-  mapping). Match with `regex:`. Quantify with
-  `repeat: {min, max}`. `{n}` and `{field}`
-  survive as regex preprocessor tokens.
+  mapping). Match with `regex:`, a CUE
+  expression evaluated as a raw-interpolation
+  string. Two helpers in scope: `digits` (named
+  numeric capture) and `fmvar(name)`
+  (frontmatter variable, regex-escaped).
+  Quantify with `repeat: {min, max}`.
   `sequential:` survives as a sibling. Drop
   `aliases:`, `required:`, the
   `{unlisted: true}` mapping, scope-level
@@ -68,8 +71,13 @@ Three axes describe each entry:
 - **Discriminator** — `heading:` value
   (`null`, string, or mapping).
 - **Matcher** — `regex:` inside the mapping
-  form, CUE-compatible RE2 plus `{n}` and
-  `{field}` preprocessor tokens.
+  form. The YAML value is the body of a CUE
+  raw-interpolation string (`#"..."#`).
+  Backslashes pass through to RE2.
+  Interpolation uses `\#(expr)`. Two helpers
+  in scope: `digits` (named numeric capture
+  `(?P<n>[0-9]+)`) and `fmvar(name)`
+  (frontmatter lookup + regex-escape).
 - **Cardinality** — `repeat: { min, max }`
   inside the mapping form.
 
