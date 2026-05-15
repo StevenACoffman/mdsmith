@@ -48,6 +48,50 @@ func TestSyncDocs_RenamesIndexMdToUnderscoreIndex(t *testing.T) {
 	assert.True(t, os.IsNotExist(err))
 }
 
+// TestSyncDocs_SynthesizesSectionIndex pins the fix for the
+// GitHub Pages 404: a docs subdirectory with content pages but
+// no index.md (e.g. docs/reference/, docs/background/) produced
+// no _index.md, so Hugo rendered no section landing page and
+// /docs/reference/ 404'd. SyncDocs now writes a minimal
+// _index.md (front matter only, title humanized from the
+// directory name) for any synced subdirectory that has content
+// but neither an index.md of its own nor a sibling `<name>.md`
+// overview page in the parent (the docs/-tree convention where
+// `reference/cli.md` is the overview for `reference/cli/`).
+func TestSyncDocs_SynthesizesSectionIndex(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	// reference/ has pages but no index.md and no parent
+	// reference.md — must get a synthesized _index.md.
+	writeFile(t, filepath.Join(src, "reference", "conventions.md"), "# Conventions\n\nbody\n")
+	// reference/cli.md is the overview for reference/cli/, so the
+	// cli/ directory must NOT get a synthesized _index.md (it
+	// would collide with cli.md's URL).
+	writeFile(t, filepath.Join(src, "reference", "cli.md"), "# CLI\n\nbody\n")
+	writeFile(t, filepath.Join(src, "reference", "cli", "check.md"), "# check\n\nbody\n")
+	// release-channels/ exercises the humanizer.
+	writeFile(t, filepath.Join(src, "development", "release-channels", "npm.md"), "# npm\n\nbody\n")
+	// guides/index.md must survive untouched (no stub overwrite).
+	writeFile(t, filepath.Join(src, "guides", "index.md"), "---\ntitle: \"Guides\"\n---\nguides body\n")
+
+	require.NoError(t, SyncDocs(src, dst))
+
+	got, err := os.ReadFile(filepath.Join(dst, "reference", "_index.md"))
+	require.NoError(t, err, "reference/_index.md must be synthesized")
+	assert.Contains(t, string(got), `title: "Reference"`)
+
+	_, err = os.Stat(filepath.Join(dst, "reference", "cli", "_index.md"))
+	assert.True(t, os.IsNotExist(err),
+		"reference/cli/ has a sibling cli.md overview — no stub")
+
+	chans, err := os.ReadFile(filepath.Join(dst, "development", "release-channels", "_index.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(chans), `title: "Release Channels"`)
+
+	assertFile(t, filepath.Join(dst, "guides", "_index.md"),
+		"---\ntitle: \"Guides\"\n---\nguides body\n")
+}
+
 func TestSyncDocs_PrunesNonMarkdownNonImage(t *testing.T) {
 	src := t.TempDir()
 	dst := t.TempDir()
@@ -312,6 +356,67 @@ func TestSyncDocs_EmptySubdirRemoveAllErrorPropagates(t *testing.T) {
 	err := NewWithFS(ff).SyncDocs(src, t.TempDir())
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errInjected)
+}
+
+// TestSyncDocs_SynthesizeStatErrorPropagates covers the
+// non-ErrNotExist branch of synthesizeSectionIndex's _index.md
+// existence probe. Stat call #1 is SyncDocs's own srcDir stat;
+// the sub/ directory's content writes nothing else through
+// Stat until the synthesize probe, so failing Stat #2 is the
+// _index.md check, which must surface (not be collapsed to a
+// "skip — already exists" no-op).
+func TestSyncDocs_SynthesizeStatErrorPropagates(t *testing.T) {
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "sub", "x.md"), "x\n")
+	ff := newFakeFS()
+	ff.failOnStatCall = 2
+	err := NewWithFS(ff).SyncDocs(src, t.TempDir())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errInjected)
+	assert.Contains(t, err.Error(), "stat ")
+}
+
+// TestSyncDocs_SynthesizeWriteErrorPropagates covers both the
+// stub-write failure inside synthesizeSectionIndex and the
+// `return true, err` arm in syncDocsSubdir that surfaces it.
+// WriteFile #1 is sub/x.md (succeeds); #2 is the synthesized
+// sub/_index.md, which fails.
+func TestSyncDocs_SynthesizeWriteErrorPropagates(t *testing.T) {
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "sub", "x.md"), "x\n")
+	ff := newFakeFS()
+	ff.failOnWriteFileCall = 2
+	err := NewWithFS(ff).SyncDocs(src, t.TempDir())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errInjected)
+}
+
+// TestHumanizeDirName pins rune-aware capitalization: a
+// multibyte leading rune must be upper-cased whole, not have
+// its first byte sliced (which would emit invalid UTF-8 into
+// the synthesized front-matter title).
+func TestHumanizeDirName(t *testing.T) {
+	assert.Equal(t, "Release Channels", humanizeDirName("release-channels"))
+	assert.Equal(t, "Reference", humanizeDirName("reference"))
+	assert.Equal(t, "Über Docs", humanizeDirName("über_docs"))
+	assert.Equal(t, "Éclair", humanizeDirName("éclair"))
+}
+
+// TestSyncDocs_SynthesizedTitleEscaping pins that a directory
+// name containing YAML metacharacters (`"` and `\`) is escaped
+// in the synthesized _index.md front matter — backslash first,
+// matching mergeFMTitle — so the output is valid YAML.
+func TestSyncDocs_SynthesizedTitleEscaping(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	dirName := `we"ird\name`
+	writeFile(t, filepath.Join(src, dirName, "page.md"), "# Page\n\nbody\n")
+
+	require.NoError(t, SyncDocs(src, dst))
+
+	got, err := os.ReadFile(filepath.Join(dst, dirName, "_index.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(got), `title: "We\"ird\\name"`)
 }
 
 // TestIsUnder_HandlesFilesystemRoot is the regression for the
