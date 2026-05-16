@@ -112,16 +112,19 @@
   --fg-muted:      var(--steel-600);
   --fg-subtle:     var(--steel-500);
   --fg-inverse:    var(--canvas);
-  --accent:        var(--forge-500);
-  --accent-hover:  var(--forge-600);
+  /* forge-700 / forge-800 give ≥ 6.4:1 on all site backgrounds
+     including canvas-sunken (footer). forge-600 failed on
+     canvas-sunken at 4.36:1 (AA threshold 4.5:1). */
+  --accent:        var(--forge-700);
+  --accent-hover:  var(--forge-800);
   --accent-soft:   var(--forge-50);
   --accent-fg:     #FFFFFF;
   --border:        var(--steel-200);
   --border-strong: var(--steel-300);
   --border-subtle: var(--steel-100);
-  --link:          var(--forge-600);
-  --link-hover:    var(--forge-700);
-  --link-visited:  var(--forge-700);
+  --link:          var(--forge-700);
+  --link-hover:    var(--forge-800);
+  --link-visited:  var(--forge-800);
   --code-bg:       var(--steel-50);
   --code-fg:       var(--steel-800);
   --code-border:   var(--steel-200);
@@ -182,7 +185,7 @@
   --shadow-lg: 0 18px 40px -8px rgba(15, 20, 25, 0.18),
                0 6px 12px -4px rgba(15, 20, 25, 0.08);
   --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.7);
-  --shadow-focus: 0 0 0 3px rgba(217, 101, 29, 0.30);
+  --shadow-focus: 0 0 0 3px rgba(184, 79, 18, 0.30);
 
   --ease-out:    cubic-bezier(0.2, 0.7, 0.2, 1);
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
