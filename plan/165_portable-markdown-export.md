@@ -1,7 +1,7 @@
 ---
 id: 165
 title: Portable Markdown export (mdsmith export)
-status: "🔲"
+status: "🔳"
 model: opus
 depends-on: []
 summary: >-
