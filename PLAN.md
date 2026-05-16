@@ -83,7 +83,7 @@ footer: |
 | 153 | ✅     | opus   | [Unify linkgraph and the LSP symbol index](plan/153_unify-linkgraph-and-lsp-index.md)                                     |
 | 154 | ✅     | sonnet | [arch-fix: extract cross-rule helpers](plan/154_arch-fix-rule-helper-extraction.md)                                       |
 | 155 | ✅     | sonnet | [arch-fix: relocate convention types out of markdownflavor](plan/155_arch-fix-convention-config-ownership.md)             |
-| 156 | 🔲     | opus   | [Composable required-structure schemas across multiple kinds](plan/156_kind-schema-composition.md)                        |
+| 156 | ✅     | opus   | [Composable required-structure schemas across multiple kinds](plan/156_kind-schema-composition.md)                        |
 | 156 | ✅     | opus   | [Section schema — unify entry shape under `heading:` discriminator](plan/156_schema-entry-unification.md)                 |
 | 157 | ✅     | sonnet | [Catalog filter by front matter property](plan/157_catalog-where-filter.md)                                               |
 | 160 | 🔲     | sonnet | [Claude Code plugin extensions — skills, agents, hooks](plan/160_claude-code-skills-agents-hooks.md)                      |
@@ -95,4 +95,5 @@ footer: |
 | 166 | 🔲     | opus   | [Schema-driven data extraction (mdsmith extract)](plan/166_schema-driven-data-extraction.md)                              |
 | 167 | 🔲     | opus   | [Custom binding overrides for mdsmith extract](plan/167_custom-binding-overrides.md)                                      |
 | 168 | 🔲     | sonnet | [Obsidian Flavored Markdown support](plan/168_obsidian-markdown-support.md)                                               |
+| 169 | 🔲     | opus   | [Enforce terminal Meta-Information and render it from frontmatter](plan/169_rule-readme-meta-information-sync.md)         |
 <?/catalog?>
