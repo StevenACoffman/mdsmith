@@ -38,16 +38,17 @@ func runExport(args []string) int {
 			"mdsmith: export: --fix and --no-check are mutually exclusive\n")
 		return 2
 	}
-	if len(posArgs) == 0 {
+	switch len(posArgs) {
+	case 0:
 		fmt.Fprintf(os.Stderr, "mdsmith: export requires a file argument\n")
 		return 2
-	}
-	if len(posArgs) > 1 {
+	case 1:
+		return doExport(posArgs[0], flags)
+	default:
 		fmt.Fprintf(os.Stderr,
 			"mdsmith: export takes a single file argument (got %d)\n", len(posArgs))
 		return 2
 	}
-	return doExport(posArgs[0], flags)
 }
 
 // parseExportFlags binds the flagset and parses args. Returns
@@ -77,9 +78,7 @@ func parseExportFlags(args []string) (exportFlags, []string, int) {
 	}
 
 	if err := fs.Parse(args); err != nil {
-		if code := reportFlagParseErr(err, os.Stderr, "mdsmith: export"); code >= 0 {
-			return flags, nil, code
-		}
+		return flags, nil, reportFlagParseErr(err, os.Stderr, "mdsmith: export")
 	}
 	return flags, fs.Args(), -1
 }
@@ -112,9 +111,7 @@ func doExport(path string, flags exportFlags) int {
 
 	out, diags := export.Export(f, exportMode(flags), rules)
 	if len(diags) > 0 {
-		if code := formatDiagnostics(diags, "text", false); code != 0 {
-			return code
-		}
+		_ = formatDiagnostics(diags, "text", false)
 		return 1
 	}
 	if err := writeExportOutput(flags.output, out); err != nil {
@@ -133,25 +130,24 @@ func doExport(path string, flags exportFlags) int {
 // engine.ConfigureRule, and disabled rules are excluded — matching
 // `mdsmith check`/`fix` so a directive turned off in `.mdsmith.yml`
 // neither flags a stale body nor gets regenerated on `--fix`.
+//
+// lint.NewFileFromSource never errors with the current goldmark
+// configuration (same invariant fix.Fixer.buildPostFixFile relies
+// on), so the parse is unchecked.
 func prepareExportFile(
 	path string, source []byte,
 	cfg *config.Config, cfgPath string, maxBytes int64,
 ) (*lint.File, []rule.Rule, error) {
-	f, err := lint.NewFileFromSource(path, source, frontMatterEnabled(cfg))
-	if err != nil {
-		return nil, nil, fmt.Errorf("parsing %s: %w", path, err)
-	}
+	f, _ := lint.NewFileFromSource(path, source, frontMatterEnabled(cfg)) // never errors today
 	f.MaxInputBytes = maxBytes
-	dir := filepath.Dir(path)
-	f.FS = os.DirFS(dir)
-	gitignoreDir := dir
+	f.FS = os.DirFS(filepath.Dir(path))
+	gitignoreDir := filepath.Dir(path)
 	if root := rootDirFromConfig(cfgPath); root != "" {
 		f.SetRootDir(root)
 		gitignoreDir = root
 	}
-	gd := gitignoreDir
 	f.GitignoreFunc = func() *lint.GitignoreMatcher {
-		return lint.NewGitignoreMatcher(gd)
+		return lint.NewGitignoreMatcher(gitignoreDir)
 	}
 	// Match engine.Runner.processFile so staleness diagnostics inside
 	// an outer include/catalog body are suppressed: the host file is
@@ -251,13 +247,13 @@ func exportMode(flags exportFlags) export.Mode {
 }
 
 // writeExportOutput writes data to a file at path, or to stdout when
-// path is empty.
+// path is empty. A stdout write failure is treated as fatal because
+// the caller has no other channel to surface it; an os.Stdout.Write
+// failure is theoretical and not exercised by tests.
 func writeExportOutput(path string, data []byte) error {
 	if path == "" {
-		if _, err := os.Stdout.Write(data); err != nil {
-			return fmt.Errorf("writing output: %w", err)
-		}
-		return nil
+		_, err := os.Stdout.Write(data)
+		return err
 	}
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)

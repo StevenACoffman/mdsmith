@@ -429,6 +429,113 @@ func TestExport_NormalizeBlankLines_EmptyInput(t *testing.T) {
 	assert.Empty(t, string(out))
 }
 
+func TestExport_SingleMarkerlessPI_FullyStripped(t *testing.T) {
+	// A file whose only content is one markerless directive — after
+	// stripping, emitLines produces nil bytes, exercising
+	// normalizeBlankLines' empty-input fast path.
+	src := "<?allow-empty-section?>\n"
+	f := newFile(t, "doc.md", src)
+
+	out, diags := export.Export(f, export.NoCheck, allRules())
+	require.Empty(t, diags)
+	assert.Empty(t, string(out))
+}
+
+func TestExport_TrailingBlankLines_Collapsed(t *testing.T) {
+	// After stripping markers, trailing blank lines beyond the
+	// directive block should be trimmed by normalizeBlankLines'
+	// trailing-blank loop.
+	src := "<?toc?>\n- foo\n<?/toc?>\n\n\n\n"
+	f := newFile(t, "doc.md", src)
+
+	out, diags := export.Export(f, export.NoCheck, allRules())
+	require.Empty(t, diags)
+	got := string(out)
+	assert.True(t, strings.HasSuffix(got, "\n"),
+		"output should end with exactly one newline, got %q", got)
+	assert.False(t, strings.HasSuffix(got, "\n\n"),
+		"trailing blank lines should be trimmed, got %q", got)
+}
+
+func TestExport_DirectiveFreeFile_PassesThroughVerbatim(t *testing.T) {
+	// The plan promises that exporting a directive-free file is a
+	// no-op. Quirky whitespace — multiple consecutive blank lines,
+	// no trailing newline — must survive unchanged.
+	src := "# Title\n\n\n\nbody\n\n\n## Section\n\nmore"
+	f := newFile(t, "doc.md", src)
+
+	out, diags := export.Export(f, export.NoCheck, allRules())
+	require.Empty(t, diags)
+	assert.Equal(t, src, string(out),
+		"directive-free files must round-trip byte-for-byte")
+}
+
+func TestExport_PreservesBlankLinesInFencedCodeBlock(t *testing.T) {
+	// A fenced code block with intentional consecutive blank lines
+	// must survive stripping. The Markdown rule MDS008 already
+	// leaves code-block blanks alone; normalizeBlankLines is
+	// expected to behave the same.
+	src := strings.Join([]string{
+		"# Title",
+		"",
+		"<?toc?>",
+		"",
+		"- [Section](#section)",
+		"",
+		"<?/toc?>",
+		"",
+		"## Section",
+		"",
+		"```",
+		"line 1",
+		"",
+		"",
+		"line 4 after two blank lines",
+		"```",
+		"",
+	}, "\n")
+	f := newFile(t, "doc.md", src)
+
+	out, diags := export.Export(f, export.NoCheck, allRules())
+	require.Empty(t, diags)
+	got := string(out)
+	// Markers gone.
+	assert.NotContains(t, got, "<?toc")
+	// Two consecutive blank lines inside the fenced block survive.
+	assert.Contains(t, got, "line 1\n\n\nline 4 after two blank lines",
+		"blank lines inside a fenced code block must not be collapsed; got:\n%s", got)
+}
+
+func TestExport_PreservesBlankLinesInIndentedCodeBlock(t *testing.T) {
+	// Same guarantee for indented code blocks: blank lines that are
+	// part of the block — leading-tab/4-space — should pass through.
+	src := strings.Join([]string{
+		"# Title",
+		"",
+		"<?toc?>",
+		"",
+		"- [Section](#section)",
+		"",
+		"<?/toc?>",
+		"",
+		"## Section",
+		"",
+		"prose",
+		"",
+		"    indented line",
+		"",
+		"    still indented after blank",
+		"",
+	}, "\n")
+	f := newFile(t, "doc.md", src)
+
+	out, diags := export.Export(f, export.NoCheck, allRules())
+	require.Empty(t, diags)
+	got := string(out)
+	assert.Contains(t, got, "indented line")
+	assert.Contains(t, got, "still indented after blank")
+}
+
 func TestExport_CheckMode_WarningSeverity_DoesNotRefuse(t *testing.T) {
 	// checkStaleness only treats Error-severity diagnostics as
 	// blocking. A Warning (e.g. catalog case-mismatch / injection

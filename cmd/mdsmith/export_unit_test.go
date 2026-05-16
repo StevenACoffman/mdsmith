@@ -88,6 +88,28 @@ func TestRunExport_TooManyPositionals(t *testing.T) {
 	assert.Contains(t, stderr, "single file argument")
 }
 
+func TestRunExport_HelpExitsZero(t *testing.T) {
+	// --help drives parseExportFlags to ErrHelp, which
+	// reportFlagParseErr maps to exit 0; the runExport `code >= 0`
+	// branch returns it directly.
+	stderr := captureStderr(func() {
+		code := runExport([]string{"--help"})
+		assert.Equal(t, 0, code)
+	})
+	assert.Contains(t, stderr, "mdsmith export")
+}
+
+func TestRunExport_UnknownFlag_ExitsTwo(t *testing.T) {
+	// An unknown flag drives parseExportFlags to a non-help parse
+	// error → reportFlagParseErr returns 2 with a stderr message →
+	// runExport's `code >= 0` branch returns it.
+	stderr := captureStderr(func() {
+		code := runExport([]string{"--no-such-flag"})
+		assert.Equal(t, 2, code)
+	})
+	assert.Contains(t, stderr, "mdsmith: export")
+}
+
 func TestWriteExportOutput_File(t *testing.T) {
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "out.md")
@@ -190,6 +212,48 @@ func TestConfiguredEnabledRules_FiltersDisabled(t *testing.T) {
 		assert.NotEqual(t, "toc", r.Name(),
 			"toc was disabled in effective config but appeared in the output")
 	}
+}
+
+func TestConfiguredEnabledRules_PropagatesConfigureRuleError(t *testing.T) {
+	// emphasis-style.ApplySettings rejects non-string `bold`. An
+	// effective map with that bad setting drives ConfigureRule into
+	// an error, which configuredEnabledRules surfaces unchanged so
+	// the export refuses with a clear message instead of running
+	// against partially-configured rules.
+	all := rule.All()
+	effective := map[string]config.RuleCfg{
+		"emphasis-style": {
+			Enabled:  true,
+			Settings: map[string]any{"bold": 42}, // wrong type → error
+		},
+	}
+
+	_, err := configuredEnabledRules(all, effective)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "emphasis-style")
+}
+
+func TestPrepareExportFile_ConfigureRuleError_BubblesUp(t *testing.T) {
+	// A config that disables every rule except a deliberately
+	// misconfigured one drives prepareExportFile → effectiveExportConfig
+	// →  configuredEnabledRules → ConfigureRule error. The error
+	// surfaces from prepareExportFile so doExport can map it to
+	// exit 2.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".mdsmith.yml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte(
+		"rules:\n  emphasis-style:\n    bold: 42\n"), 0644))
+
+	cfg, _, err := loadConfig(cfgPath)
+	require.NoError(t, err)
+
+	srcPath := filepath.Join(dir, "doc.md")
+	require.NoError(t, os.WriteFile(srcPath, []byte("# Hi\n"), 0644))
+	src := []byte("# Hi\n")
+
+	_, _, err = prepareExportFile(srcPath, src, cfg, cfgPath, lint.DefaultMaxInputBytes)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "emphasis-style")
 }
 
 func TestConfiguredEnabledRules_OmitsRulesAbsentFromEffective(t *testing.T) {
@@ -356,6 +420,84 @@ func TestDoExport_InvalidConfig_ExitsTwo(t *testing.T) {
 	})
 	assert.Equal(t, 2, code)
 	assert.NotEmpty(t, stderr)
+}
+
+func TestDoExport_InvalidFrontMatterKinds_ExitsTwo(t *testing.T) {
+	// A file with malformed `kinds:` front matter makes
+	// prepareExportFile return an error. doExport must map that to
+	// exit 2 with a clear stderr message.
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "doc.md")
+	require.NoError(t, os.WriteFile(srcPath, []byte("---\nkinds: 42\n---\n# Hi\n"), 0644))
+
+	var code int
+	stderr := captureStderr(func() {
+		code = runExport([]string{srcPath})
+	})
+	assert.Equal(t, 2, code)
+	assert.Contains(t, stderr, "mdsmith:")
+}
+
+func TestDoExport_StaleFile_PrintsDiagnostics(t *testing.T) {
+	// Stale-body refusal in Check mode goes through formatDiagnostics
+	// and exits 1 with the diagnostic on stderr.
+	dir := t.TempDir()
+	src := "# Title\n\n<?toc?>\n\n- [Wrong](#wrong)\n\n<?/toc?>\n\n## Section\n\nbody\n"
+	srcPath := filepath.Join(dir, "doc.md")
+	require.NoError(t, os.WriteFile(srcPath, []byte(src), 0644))
+
+	var code int
+	stderr := captureStderr(func() {
+		code = runExport([]string{srcPath})
+	})
+	assert.Equal(t, 1, code)
+	assert.Contains(t, stderr, "out of date")
+	assert.Contains(t, stderr, "MDS038")
+}
+
+func TestPrepareExportFile_NoCfgPath_UsesDocDirForGitignore(t *testing.T) {
+	// When cfgPath is empty, the gitignore matcher should still be
+	// wired (against the doc's parent directory). Triggering
+	// GetGitignore must not panic and should return a non-nil
+	// matcher — exercises the closure body.
+	dir := t.TempDir()
+	src := "# Title\n\nNo directives.\n"
+	path := filepath.Join(dir, "doc.md")
+	require.NoError(t, os.WriteFile(path, []byte(src), 0644))
+
+	f, _, err := prepareExportFile(path, []byte(src), minimalConfig(), "", lint.DefaultMaxInputBytes)
+	require.NoError(t, err)
+	// Calling GetGitignore should invoke the closure on line 153-155
+	// and return a matcher anchored at the doc's parent dir.
+	matcher := f.GetGitignore()
+	require.NotNil(t, matcher)
+}
+
+func TestPrepareExportFile_WithCfgPath_UsesProjectRootForGitignore(t *testing.T) {
+	// With cfgPath set, the matcher should be anchored at the
+	// project root (parent of cfgPath), exercising the
+	// rootDirFromConfig branch in prepareExportFile.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".mdsmith.yml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("rules: {}\n"), 0644))
+
+	src := "# Title\n\nNo directives.\n"
+	path := filepath.Join(dir, "doc.md")
+	require.NoError(t, os.WriteFile(path, []byte(src), 0644))
+
+	f, _, err := prepareExportFile(path, []byte(src), minimalConfig(), cfgPath, lint.DefaultMaxInputBytes)
+	require.NoError(t, err)
+	matcher := f.GetGitignore()
+	require.NotNil(t, matcher)
+}
+
+func TestEffectiveExportConfig_FieldsPresentBranch_PropagatesError(t *testing.T) {
+	// Front-matter parse error from exportFrontMatterFields should
+	// flow through effectiveExportConfig.
+	cfg := configWithFieldsPresent()
+	_, err := effectiveExportConfig(cfg, "doc.md", []byte("---\nbroken: [yaml\n---\n"), rule.All())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "front matter")
 }
 
 func TestDoExport_BadMaxInputSize_ExitsTwo(t *testing.T) {

@@ -234,7 +234,9 @@ func inGeneratedRange(line int, ranges []lint.LineRange) bool {
 // stripDirectives removes every line that the engine recognises as a
 // real directive start or end marker, plus every markerless PI
 // (e.g. <?allow-empty-section?>, <?require?>), and normalises blank
-// lines around the holes left behind.
+// lines around the holes left behind. A directive-free file is
+// returned byte-for-byte unchanged — `export` is a no-op when there
+// are no markers to remove.
 //
 // Marker-like text the engine treats as literal content — for example
 // inner same-type markers nested in an outer directive — survives,
@@ -277,8 +279,21 @@ func stripDirectives(f *lint.File, directives []directiveStrip) []byte {
 		}
 	}
 
+	// No directive markers found — pass the source through verbatim
+	// so the plan's "export of a directive-free file equals the input"
+	// promise holds and code-block blank lines aren't disturbed.
+	if len(stripLines) == 0 {
+		return f.Source
+	}
+
 	out := emitLines(f.Lines, stripLines)
-	return normalizeBlankLines(out)
+	// Re-parse so the code-block line set lines up with `out`'s
+	// (shifted) line numbers. Without this the normalisation pass
+	// would still see code-block lines at their pre-strip positions
+	// and could collapse intentional blank lines inside fenced/
+	// indented code blocks.
+	parsed, _ := lint.NewFile(f.Path, out) // never errors today
+	return normalizeBlankLines(out, lint.CollectCodeBlockLines(parsed))
 }
 
 // piLineRange returns the 1-based start and end source-line numbers
@@ -323,33 +338,53 @@ func emitLines(srcLines [][]byte, strip map[int]bool) []byte {
 // normalizeBlankLines collapses runs of consecutive blank lines to a
 // single blank line, drops leading/trailing blanks, and ensures the
 // output ends with exactly one newline (unless the result is empty).
-func normalizeBlankLines(src []byte) []byte {
+//
+// Lines whose 1-based index appears in codeBlockLines are treated as
+// non-blank: they pass through unchanged, end any run of collapsing,
+// and anchor leading/trailing trims. That preserves intentional
+// blank lines inside fenced and indented code blocks, matching how
+// MDS008 (blank-line rule) leaves code-block whitespace alone.
+func normalizeBlankLines(src []byte, codeBlockLines map[int]bool) []byte {
 	if len(src) == 0 {
 		return src
 	}
-	lines := strings.Split(string(src), "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
+	rawLines := strings.Split(string(src), "\n")
+	if len(rawLines) > 0 && rawLines[len(rawLines)-1] == "" {
+		rawLines = rawLines[:len(rawLines)-1]
 	}
-	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+
+	type srcLine struct {
+		text   string
+		inCode bool
+	}
+	lines := make([]srcLine, len(rawLines))
+	for i, l := range rawLines {
+		lines[i] = srcLine{text: l, inCode: codeBlockLines[i+1]}
+	}
+
+	isBlank := func(l srcLine) bool {
+		return !l.inCode && strings.TrimSpace(l.text) == ""
+	}
+
+	for len(lines) > 0 && isBlank(lines[0]) {
 		lines = lines[1:]
 	}
-	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+	for len(lines) > 0 && isBlank(lines[len(lines)-1]) {
 		lines = lines[:len(lines)-1]
 	}
 
 	var out []string
 	blank := false
 	for _, l := range lines {
-		if strings.TrimSpace(l) == "" {
+		if isBlank(l) {
 			if !blank {
 				out = append(out, "")
 			}
 			blank = true
-		} else {
-			out = append(out, l)
-			blank = false
+			continue
 		}
+		out = append(out, l.text)
+		blank = false
 	}
 	if len(out) == 0 {
 		return nil
