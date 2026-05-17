@@ -10,7 +10,7 @@ func CloneRule(r Rule) Rule {
 	if c, ok := r.(Configurable); ok {
 		// Create a new zero-value instance of the same concrete type.
 		rv := reflect.ValueOf(r)
-		if rv.Kind() == reflect.Ptr {
+		if rv.Kind() == reflect.Pointer {
 			newPtr := reflect.New(rv.Elem().Type())
 			clone := newPtr.Interface().(Rule)
 			if cc, ok := clone.(Configurable); ok {
@@ -22,7 +22,7 @@ func CloneRule(r Rule) Rule {
 
 	// Fallback: reflect-based copy for non-Configurable rules.
 	rv := reflect.ValueOf(r)
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		newPtr := reflect.New(rv.Elem().Type())
 		newPtr.Elem().Set(rv.Elem())
 		return newPtr.Interface().(Rule)

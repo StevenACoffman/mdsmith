@@ -342,7 +342,7 @@ func TestFormatTable_LessThanTwoRows(t *testing.T) {
 		rawLines:  [][]byte{[]byte("| a | b |")},
 		rows:      []row{{cells: []string{"a", "b"}}},
 	}
-	result := formatTable(tbl, 1)
+	result := formatTable(tbl, Config{Pad: 1})
 	assert.Equal(t, tbl.rawLines, result.rawLines)
 }
 
@@ -490,7 +490,7 @@ func TestFormatLines_TableInsideSkippedCodeBlock_NotRewritten(t *testing.T) {
 	lines := splitLines(string(src))
 	codeLines := map[int]bool{2: true, 3: true, 4: true}
 
-	out := FormatLines(src, lines, codeLines, 1)
+	out := FormatLines(src, lines, codeLines, Config{Pad: 1})
 	outStr := string(out)
 
 	// Inside the fence: the original mis-formatted rows must survive.
@@ -509,7 +509,7 @@ func TestViolations_FormattedTable_None(t *testing.T) {
 		"| foo    | A short one               |\n" +
 		"| barbaz | A longer description here |\n"
 	lines := splitLines(src)
-	got := Violations(lines, nil, 1)
+	got := Violations(lines, nil, Config{Pad: 1})
 	assert.Empty(t, got)
 }
 
@@ -519,7 +519,7 @@ func TestViolations_MisalignedTable_One(t *testing.T) {
 		"| foo | A short one |\n" +
 		"| barbaz | A longer description here |\n"
 	lines := splitLines(src)
-	got := Violations(lines, nil, 1)
+	got := Violations(lines, nil, Config{Pad: 1})
 	require.Len(t, got, 1)
 	assert.Equal(t, 1, got[0].StartLine)
 	assert.Contains(t, got[0].Message, "table is not formatted")
@@ -528,7 +528,7 @@ func TestViolations_MisalignedTable_One(t *testing.T) {
 func TestViolations_NegativePadDefaultsTo1(t *testing.T) {
 	src := "| a | b |\n|---|---|\n| 1 | 2 |\n"
 	lines := splitLines(src)
-	got := Violations(lines, nil, -1)
+	got := Violations(lines, nil, Config{Pad: -1})
 	assert.NotEmpty(t, got, "negative pad should default to 1 and produce violations")
 }
 
@@ -537,7 +537,7 @@ func TestViolations_NegativePadDefaultsTo1(t *testing.T) {
 func TestFormatLines_NoTables_ReturnsCopyOfSource(t *testing.T) {
 	src := []byte("# Heading\n\nSome text.\n")
 	lines := splitLines(string(src))
-	result := FormatLines(src, lines, nil, 1)
+	result := FormatLines(src, lines, nil, Config{Pad: 1})
 	assert.Equal(t, src, result)
 	// Result must be a copy, not the same slice header.
 	if len(src) > 0 {
@@ -549,7 +549,7 @@ func TestFormatLines_NoTables_ReturnsCopyOfSource(t *testing.T) {
 func TestFormatLines_RewritesTables(t *testing.T) {
 	src := []byte("| a | b |\n|---|---|\n| foo | barbaz |\n")
 	lines := splitLines(string(src))
-	result := FormatLines(src, lines, nil, 1)
+	result := FormatLines(src, lines, nil, Config{Pad: 1})
 	assert.Contains(t, string(result), "| a   | b      |")
 }
 
@@ -566,7 +566,7 @@ func TestFormatLines_AlreadyFormattedTableAmongOthers(t *testing.T) {
 		"|---|---|\n" +
 		"| 1 | 2 |\n")
 	lines := splitLines(string(src))
-	result := FormatLines(src, lines, nil, 1)
+	result := FormatLines(src, lines, nil, Config{Pad: 1})
 	// First (canonical) table is preserved byte-for-byte.
 	assert.Contains(t, string(result), "| a   | b   |")
 	assert.Contains(t, string(result), "| foo | bar |")
@@ -577,7 +577,7 @@ func TestFormatLines_AlreadyFormattedTableAmongOthers(t *testing.T) {
 func TestFormatLines_NegativePadDefaultsTo1(t *testing.T) {
 	src := []byte("| a | b |\n|---|---|\n| 1 | 2 |\n")
 	lines := splitLines(string(src))
-	result := FormatLines(src, lines, nil, -1)
+	result := FormatLines(src, lines, nil, Config{Pad: -1})
 	assert.Contains(t, string(result), "| a   | b   |")
 }
 
@@ -604,6 +604,77 @@ func TestWriteSeparatorRow_AlignmentIndicators(t *testing.T) {
 	out := FormatString(src, 1)
 	assert.Contains(t, out, "|:-----|:------:|------:|",
 		"expected separator preserves all three alignment markers; got:\n%s", out)
+}
+
+// --- SeparatorSpaced ---
+
+func TestFormatStringWithConfig_SpacedSeparator_NoAlignment(t *testing.T) {
+	// colWidths: "Name"=4, "Value"=5 → spaced separator: | ---- | ----- |
+	src := "| Name | Value |\n|---|---|\n| foo | bar |\n"
+	out := FormatStringWithConfig(src, Config{Pad: 1, SeparatorSpaced: true})
+	assert.Contains(t, out, "| ---- | ----- |",
+		"spaced separator should use space-padded dashes; got:\n%s", out)
+	assert.NotContains(t, out, "|---|", "compact separator must not appear in spaced output")
+}
+
+func TestFormatStringWithConfig_SpacedSeparator_AlignmentStyles(t *testing.T) {
+	cases := map[string]struct {
+		sep  string
+		want string
+	}{
+		"left":   {sep: "|:---|", want: "| :-- |"},
+		"right":  {sep: "|---:|", want: "| --: |"},
+		"center": {sep: "|:---:|", want: "| :-: |"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			src := "| Col |\n" + tc.sep + "\n| a |\n"
+			out := FormatStringWithConfig(src, Config{Pad: 1, SeparatorSpaced: true})
+			assert.Contains(t, out, tc.want,
+				"spaced %s-aligned separator; got:\n%s", name, out)
+		})
+	}
+}
+
+func TestViolations_SpacedSeparator_FlagsCompactTable(t *testing.T) {
+	// A compact separator should be flagged when separator-style is spaced.
+	src := "| Name   | Value |\n" +
+		"|--------|-------|\n" +
+		"| foo    | bar   |\n"
+	lines := splitLines(src)
+	got := Violations(lines, nil, Config{Pad: 1, SeparatorSpaced: true})
+	require.Len(t, got, 1, "compact separator must be a violation under spaced style")
+	assert.Contains(t, got[0].Message, "table is not formatted")
+}
+
+func TestViolations_SpacedSeparator_AcceptsSpacedTable(t *testing.T) {
+	// Round-trip: format with spaced config, then check — must be clean.
+	src := "| Name | Value |\n|---|---|\n| foo | bar |\n"
+	cfg := Config{Pad: 1, SeparatorSpaced: true}
+	lines := splitLines(src)
+	formatted := string(FormatLines([]byte(src), lines, nil, cfg))
+	fmtLines := splitLines(formatted)
+	got := Violations(fmtLines, nil, cfg)
+	assert.Empty(t, got, "table formatted with spaced config must not be flagged; table:\n%s", formatted)
+}
+
+func TestFormatLines_SpacedSeparator_RewritesCompactToSpaced(t *testing.T) {
+	src := []byte("| a | b |\n|---|---|\n| foo | barbaz |\n")
+	lines := splitLines(string(src))
+	result := FormatLines(src, lines, nil, Config{Pad: 1, SeparatorSpaced: true})
+	assert.Contains(t, string(result), "| --- |",
+		"FormatLines must rewrite compact separator to spaced; got:\n%s", string(result))
+	assert.NotContains(t, string(result), "|---|",
+		"compact separator must be removed after FormatLines with spaced config")
+}
+
+func TestFormatStringWithConfig_CompactSeparator_Unchanged(t *testing.T) {
+	// Explicit compact style must behave identically to FormatString.
+	src := "| a | b |\n|---|---|\n| foo | bar |\n"
+	wantCompact := FormatString(src, 1)
+	gotExplicit := FormatStringWithConfig(src, Config{Pad: 1, SeparatorSpaced: false})
+	assert.Equal(t, wantCompact, gotExplicit,
+		"explicit compact style must match default FormatString output")
 }
 
 // --- Helper functions ---

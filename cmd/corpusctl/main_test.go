@@ -186,7 +186,7 @@ func writeAnnotations(sample []corpus.QASampleRecord, path string) error {
 	builder := strings.Builder{}
 	builder.WriteString("record_id,actual_category\n")
 	for _, row := range sample {
-		builder.WriteString(fmt.Sprintf("%s,%s\n", row.RecordID, row.PredictedCategory))
+		fmt.Fprintf(&builder, "%s,%s\n", row.RecordID, row.PredictedCategory)
 	}
 	return os.WriteFile(path, []byte(builder.String()), 0o644)
 }

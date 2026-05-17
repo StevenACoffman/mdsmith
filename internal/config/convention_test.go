@@ -3,7 +3,6 @@ package config
 import (
 	"go/parser"
 	"go/token"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,17 +27,19 @@ import (
 // exercise rule.ByName lookups.
 func TestConfigDoesNotImportRules(t *testing.T) {
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, parser.ImportsOnly)
+	entries, err := os.ReadDir(".")
 	require.NoError(t, err)
-	for _, pkg := range pkgs {
-		for fname, file := range pkg.Files {
-			for _, imp := range file.Imports {
-				path := strings.Trim(imp.Path.Value, `"`)
-				assert.NotContains(t, path, "internal/rules/",
-					"%s imports a rule package: %s", fname, path)
-			}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, parser.ImportsOnly)
+		require.NoError(t, err)
+		for _, imp := range f.Imports {
+			path := strings.Trim(imp.Path.Value, `"`)
+			assert.NotContains(t, path, "internal/rules/",
+				"%s imports a rule package: %s", name, path)
 		}
 	}
 }

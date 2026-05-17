@@ -98,7 +98,7 @@ func (r *Rule) Generate(f *lint.File, filePath string, line int,
 		indent := strings.Repeat("  ", depth)
 		// Escape special characters in link text to avoid breaking Markdown syntax.
 		escapedText := escapeLinkText(item.Text)
-		sb.WriteString(fmt.Sprintf("%s- [%s](#%s)\n", indent, escapedText, item.Anchor))
+		fmt.Fprintf(&sb, "%s- [%s](#%s)\n", indent, escapedText, item.Anchor)
 	}
 
 	content := sb.String()

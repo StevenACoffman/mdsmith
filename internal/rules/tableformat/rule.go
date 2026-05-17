@@ -16,7 +16,8 @@ func init() {
 // Rule checks that markdown tables are formatted with consistent
 // column widths and padding (prettier-style).
 type Rule struct {
-	Pad int // spaces on each side of cell content
+	Pad             int  // spaces on each side of cell content
+	SeparatorSpaced bool // true: | --- | --- |, false (default): |---|---|
 }
 
 // ID implements rule.Rule.
@@ -31,6 +32,9 @@ func (r *Rule) Category() string { return "table" }
 // GetPad returns the current pad setting.
 func (r *Rule) GetPad() int { return r.Pad }
 
+// GetSeparatorSpaced returns true when the spaced separator style is active.
+func (r *Rule) GetSeparatorSpaced() bool { return r.SeparatorSpaced }
+
 // ApplySettings implements rule.Configurable.
 func (r *Rule) ApplySettings(s map[string]any) error {
 	for k, v := range s {
@@ -44,6 +48,19 @@ func (r *Rule) ApplySettings(s map[string]any) error {
 				return fmt.Errorf("table-format: pad must be non-negative, got %d", n)
 			}
 			r.Pad = n
+		case "separator-style":
+			sv, ok := v.(string)
+			if !ok {
+				return fmt.Errorf("table-format: separator-style must be a string, got %T", v)
+			}
+			switch sv {
+			case "compact":
+				r.SeparatorSpaced = false
+			case "spaced":
+				r.SeparatorSpaced = true
+			default:
+				return fmt.Errorf("table-format: separator-style must be \"compact\" or \"spaced\", got %q", sv)
+			}
 		default:
 			return fmt.Errorf("table-format: unknown setting %q", k)
 		}
@@ -54,15 +71,17 @@ func (r *Rule) ApplySettings(s map[string]any) error {
 // DefaultSettings implements rule.Configurable.
 func (r *Rule) DefaultSettings() map[string]any {
 	return map[string]any{
-		"pad": 1,
+		"pad":             1,
+		"separator-style": "compact",
 	}
 }
 
 // Check implements rule.Rule.
 func (r *Rule) Check(f *lint.File) []lint.Diagnostic {
 	codeLines := lint.CollectCodeBlockLines(f)
+	cfg := tablefmt.Config{Pad: r.Pad, SeparatorSpaced: r.SeparatorSpaced}
 	var diags []lint.Diagnostic
-	for _, v := range tablefmt.Violations(f.Lines, codeLines, r.Pad) {
+	for _, v := range tablefmt.Violations(f.Lines, codeLines, cfg) {
 		diags = append(diags, lint.Diagnostic{
 			File:     f.Path,
 			Line:     v.StartLine,
@@ -79,7 +98,8 @@ func (r *Rule) Check(f *lint.File) []lint.Diagnostic {
 // Fix implements rule.FixableRule.
 func (r *Rule) Fix(f *lint.File) []byte {
 	codeLines := lint.CollectCodeBlockLines(f)
-	return tablefmt.FormatLines(f.Source, f.Lines, codeLines, r.Pad)
+	cfg := tablefmt.Config{Pad: r.Pad, SeparatorSpaced: r.SeparatorSpaced}
+	return tablefmt.FormatLines(f.Source, f.Lines, codeLines, cfg)
 }
 
 var _ rule.FixableRule = (*Rule)(nil)

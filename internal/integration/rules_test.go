@@ -149,7 +149,7 @@ func applySettingsToRule(
 
 	// Snapshot via reflect so cleanup fully restores the pre-test state.
 	rv := reflect.ValueOf(r)
-	if rv.Kind() == reflect.Ptr && !rv.IsNil() {
+	if rv.Kind() == reflect.Pointer && !rv.IsNil() {
 		snapshot := reflect.New(rv.Elem().Type()).Elem()
 		snapshot.Set(rv.Elem())
 		t.Cleanup(func() {

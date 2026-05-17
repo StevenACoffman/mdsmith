@@ -315,3 +315,78 @@ func TestCategory(t *testing.T) {
 	r := &Rule{}
 	assert.NotEmpty(t, r.Category())
 }
+
+// --- separator-style setting ---
+
+func TestApplySettings_SeparatorStyle(t *testing.T) {
+	cases := map[string]struct {
+		initial    bool
+		value      any
+		wantErr    bool
+		wantSpaced bool
+	}{
+		"spaced":     {initial: false, value: "spaced", wantErr: false, wantSpaced: true},
+		"compact":    {initial: true, value: "compact", wantErr: false, wantSpaced: false},
+		"invalid":    {initial: false, value: "other", wantErr: true},
+		"wrong type": {initial: false, value: 42, wantErr: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := &Rule{Pad: 1, SeparatorSpaced: tc.initial}
+			err := r.ApplySettings(map[string]any{"separator-style": tc.value})
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantSpaced, r.SeparatorSpaced)
+		})
+	}
+}
+
+func TestDefaultSettings_IncludesSeparatorStyle(t *testing.T) {
+	r := &Rule{Pad: 1}
+	defaults := r.DefaultSettings()
+	style, ok := defaults["separator-style"]
+	require.True(t, ok, "separator-style missing from DefaultSettings")
+	assert.Equal(t, "compact", style)
+}
+
+func TestCheck_SpacedStyle_FlagsCompactSeparator(t *testing.T) {
+	src := "| Name   | Value |\n" +
+		"|--------|-------|\n" +
+		"| foo    | bar   |\n"
+	r := &Rule{Pad: 1, SeparatorSpaced: true}
+	f := newTestFile(t, src)
+	diags := r.Check(f)
+	require.Len(t, diags, 1, "compact separator must be flagged under spaced style")
+	assert.Contains(t, diags[0].Message, "table is not formatted")
+}
+
+func TestCheck_SpacedStyle_AcceptsSpacedSeparator(t *testing.T) {
+	// Fix the table first, then verify Check finds no violations.
+	src := "| Name | Value |\n|---|---|\n| foo | bar |\n"
+	r := &Rule{Pad: 1, SeparatorSpaced: true}
+	fixed := string(r.Fix(newTestFile(t, src)))
+	diags := r.Check(newTestFile(t, fixed))
+	assert.Empty(t, diags, "table fixed with spaced style must pass Check; table:\n%s", fixed)
+}
+
+func TestFix_SpacedStyle_RewritesCompactToSpaced(t *testing.T) {
+	// colWidths: "Name"=4, "Value"=5 → spaced separator: | ---- | ----- |
+	src := "| Name | Value |\n" +
+		"|---|---|\n" +
+		"| foo | bar |\n"
+	r := &Rule{Pad: 1, SeparatorSpaced: true}
+	f := newTestFile(t, src)
+	fixed := string(r.Fix(f))
+	assert.Contains(t, fixed, "| ---- | ----- |",
+		"Fix must rewrite compact separator to spaced; got:\n%s", fixed)
+	assert.NotContains(t, fixed, "|---|",
+		"compact separator must not remain after Fix with spaced style")
+}
+
+func TestGetSeparatorSpaced(t *testing.T) {
+	assert.False(t, (&Rule{}).GetSeparatorSpaced())
+	assert.True(t, (&Rule{SeparatorSpaced: true}).GetSeparatorSpaced())
+}
