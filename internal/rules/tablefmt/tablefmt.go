@@ -459,16 +459,19 @@ func writeSeparatorRow(line *strings.Builder, aligns []align, colWidths []int, n
 	for j := 0; j < numCols; j++ {
 		colWidth := colWidths[j]
 		if cfg.SeparatorSpaced {
-			dashCount := colWidth
+			markerCount := 0
 			switch aligns[j] {
 			case alignLeft, alignRight:
-				dashCount--
+				markerCount = 1
 			case alignCenter:
-				dashCount -= 2
+				markerCount = 2
 			}
-			if dashCount < 3 {
-				dashCount = 3
+			minColWidth := 3 + markerCount
+			if colWidth < minColWidth {
+				colWidth = minColWidth
+				colWidths[j] = colWidth
 			}
+			dashCount := colWidth - markerCount
 
 			switch aligns[j] {
 			case alignLeft:
